@@ -22,9 +22,12 @@ final class NotchWindowController: NSWindowController {
     private let taskStore: TaskStore
     private let calendarStore: CalendarStore
     private let agentMonitorStore: AgentMonitorStore
+    private let liveActivityCenter: LiveActivityCenter
     private let logger = AppLogger.window
     private var spotifyPlaybackCancellable: AnyCancellable?
+    private var liveActivityCancellable: AnyCancellable?
     private var surfaceHostView: SolidBlackNotchHostingView<OverlaySurfaceView>?
+    private var bubbleController: DynamicIslandBubbleController?
     private(set) var state: SurfaceState = .collapsed
 
     init(
@@ -34,7 +37,8 @@ final class NotchWindowController: NSWindowController {
         spotifyMusicStore: SpotifyMusicStore,
         taskStore: TaskStore,
         calendarStore: CalendarStore,
-        agentMonitorStore: AgentMonitorStore
+        agentMonitorStore: AgentMonitorStore,
+        liveActivityCenter: LiveActivityCenter
     ) {
         self.display = display
         self.settingsStore = settingsStore
@@ -43,6 +47,7 @@ final class NotchWindowController: NSWindowController {
         self.taskStore = taskStore
         self.calendarStore = calendarStore
         self.agentMonitorStore = agentMonitorStore
+        self.liveActivityCenter = liveActivityCenter
 
         let initialFrame = Self.frame(for: .collapsed, display: display)
         let panel = NotchPanel(
@@ -105,6 +110,14 @@ final class NotchWindowController: NSWindowController {
                     self.refreshGeometry(showsNowPlaying: hasActiveTrack)
                 }
             }
+
+        bubbleController = DynamicIslandBubbleController(
+            anchorHeight: display.anchor.rect.height
+        )
+        liveActivityCancellable = liveActivityCenter.$activity
+            .sink { [weak self] activity in
+                MainActor.assumeIsolated { self?.updateBubble(activity: activity) }
+            }
     }
 
     required init?(coder: NSCoder) {
@@ -114,6 +127,29 @@ final class NotchWindowController: NSWindowController {
     func showCollapsed() {
         transition(to: .collapsed)
         window?.orderFrontRegardless()
+        updateBubble(activity: liveActivityCenter.activity)
+    }
+
+    override func close() {
+        bubbleController?.close()
+        super.close()
+    }
+
+    /// Repositions the dynamic-island bubble against the current notch frame
+    /// and passes it the activity to display.
+    private func updateBubble(activity: LiveActivity?) {
+        let notchFrame = Self.frame(
+            for: state,
+            display: display,
+            expandedWidth: settingsStore.expandedWidth,
+            showsNowPlaying: spotifyMusicStore.hasActiveTrack
+        )
+        bubbleController?.update(
+            activity: activity,
+            notchFrame: notchFrame,
+            notchWindow: window,
+            isNotchExpanded: state == .expanded
+        )
     }
 
     func showExpanded() {
@@ -155,6 +191,7 @@ final class NotchWindowController: NSWindowController {
             context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             window.animator().setFrame(targetFrame, display: true)
         }
+        updateBubble(activity: liveActivityCenter.activity)
     }
 
     func handlePointerDown(at point: CGPoint) {
@@ -334,6 +371,7 @@ final class NotchWindowController: NSWindowController {
             context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             window.animator().setFrame(targetFrame, display: true)
         }
+        updateBubble(activity: liveActivityCenter.activity)
 
         logger.debug("Surface transitioned to \(String(describing: newState), privacy: .public), frame=\(String(describing: targetFrame), privacy: .public)")
     }

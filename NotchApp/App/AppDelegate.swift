@@ -9,6 +9,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let taskStore = TaskStore()
     let calendarStore = CalendarStore()
     let agentMonitorStore = AgentMonitorStore()
+    lazy var liveActivityCenter = LiveActivityCenter(
+        agentMonitorStore: agentMonitorStore,
+        taskStore: taskStore
+    )
 
     private var statusItem: NSStatusItem?
     private var displayInfoMenuItem: NSMenuItem?
@@ -117,7 +121,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             spotifyMusicStore: spotifyMusicStore,
             taskStore: taskStore,
             calendarStore: calendarStore,
-            agentMonitorStore: agentMonitorStore
+            agentMonitorStore: agentMonitorStore,
+            liveActivityCenter: liveActivityCenter
         )
         controller.onOpenSettings = { [weak self] in
             self?.showSettingsWindow()
