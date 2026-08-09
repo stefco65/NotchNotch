@@ -84,6 +84,18 @@ struct AgentMonitorPaths: Sendable {
             )
         )
     }
+
+    /// All directories / files worth watching with kqueue so that any write
+    /// triggers a re-scan immediately.
+    var watchTargets: [URL] {
+        [
+            codexThreadLocks,
+            codexStateDatabase.deletingLastPathComponent(),
+            cursorStateDatabase,
+            antigravityAppStorage,
+            antigravityConversations
+        ]
+    }
 }
 
 struct AgentStatusScanner: Sendable {
@@ -157,12 +169,38 @@ struct AgentStatusScanner: Sendable {
         }
     }
 
+    /// Map a raw Antigravity step status integer to an agent activity state.
+    /// Values observed in real databases:
+    ///   2 = in-progress / generating
+    ///   3 = done / completed
+    ///   7 = stopped / aborted
     static func antigravityState(status: Int) -> AgentActivityState {
         switch status {
-        case 0, 1, 2, 4: .working
-        case 3, 6, 8: .done
-        default: .stopped
+        case 2:         return .working
+        case 3:         return .done
+        case 7:         return .stopped
+        default:
+            return status < 3 ? .working : .done
         }
+    }
+
+    /// Derive the overall state of one conversation from its step data.
+    /// Rules:
+    ///  1. The LAST step's status wins for working/done/stopped.
+    ///     (A single intermediate aborted step should not make a finished
+    ///      conversation appear as stopped.)
+    ///  2. If the last step is in-progress but there is also a more-recent
+    ///     finished step, we trust the finished one.
+    static func antigravityConversationState(
+        lastStatus: Int,
+        hasWorkingStep: Bool
+    ) -> AgentActivityState {
+        // If last step is definitively done or stopped, trust it.
+        if lastStatus == 3 { return .done }
+        if lastStatus == 7 { return .stopped }
+        // Last step is in-progress (2) or unknown.
+        if hasWorkingStep { return .working }
+        return .done
     }
 
     private func scanCodex() -> AgentCounts {
@@ -179,7 +217,7 @@ struct AgentStatusScanner: Sendable {
         guard !threadIDs.isEmpty else { return AgentCounts() }
 
         let identifiers = threadIDs
-            .map { "'\($0.replacingOccurrences(of: "'", with: "''"))'" }
+            .map { "'\($0.replacingOccurrences(of: "'", with: "''"))'"}
             .joined(separator: ",")
         let rows = sqliteQuery(
             database: paths.codexStateDatabase,
@@ -228,32 +266,47 @@ struct AgentStatusScanner: Sendable {
     }
 
     private func scanAntigravity() -> AgentCounts {
-        guard let data = try? Data(contentsOf: paths.antigravityAppStorage),
-              let storage = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let text = storage["aux-pane-session"] as? String else {
-            return AgentCounts()
-        }
-        let pattern = #"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"#
-        guard let regex = try? NSRegularExpression(pattern: pattern) else {
-            return AgentCounts()
-        }
-        let range = NSRange(text.startIndex..., in: text)
-        let identifiers = Set(regex.matches(in: text, range: range).compactMap { match -> String? in
-            guard let swiftRange = Range(match.range, in: text) else { return nil }
-            return String(text[swiftRange]).lowercased()
-        })
+        // Always scan all recent conversation DBs directly.
+        // The aux-pane-session field in app_storage.json is often empty
+        // (it only contains IDs of currently open side-panel sessions),
+        // so we cannot rely on it as the primary source.
+        return scanAntigravityFromConversations()
+    }
 
+    /// Scan all conversation databases in the conversations directory.
+    /// Only includes DBs modified within the last hour to avoid counting
+    /// old finished sessions.
+    private func scanAntigravityFromConversations() -> AgentCounts {
+        guard let urls = try? FileManager.default.contentsOfDirectory(
+            at: paths.antigravityConversations,
+            includingPropertiesForKeys: [.contentModificationDateKey]
+        ) else { return AgentCounts() }
+
+        let cutoff = Date().addingTimeInterval(-3600)
         var counts = AgentCounts()
-        for identifier in identifiers {
-            let database = paths.antigravityConversations
-                .appendingPathComponent(identifier)
-                .appendingPathExtension("db")
-            guard FileManager.default.fileExists(atPath: database.path) else { continue }
-            let value = sqliteQuery(
-                database: database,
+
+        for url in urls where url.pathExtension == "db" {
+            let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey])
+                .contentModificationDate) ?? .distantPast
+            guard modified > cutoff else { continue }
+
+            // Fetch last step status and whether any step is currently active.
+            // Two queries: last step (to determine final state) + any in-progress.
+            let lastRow = sqliteQuery(
+                database: url,
                 sql: "SELECT status FROM steps ORDER BY idx DESC LIMIT 1;"
             ).first
-            counts.add(value.flatMap(Int.init).map(Self.antigravityState) ?? .stopped)
+            guard let lastStatus = lastRow.flatMap(Int.init) else { continue }
+
+            let hasWorking = !sqliteQuery(
+                database: url,
+                sql: "SELECT 1 FROM steps WHERE status = 2 LIMIT 1;"
+            ).isEmpty
+
+            counts.add(Self.antigravityConversationState(
+                lastStatus: lastStatus,
+                hasWorkingStep: hasWorking
+            ))
         }
         return counts
     }
@@ -263,7 +316,13 @@ struct AgentStatusScanner: Sendable {
         let process = Process()
         let output = Pipe()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
-        process.arguments = ["-readonly", database.path, sql]
+        // Use WAL mode and a short busy timeout so we don't block on a live write lock.
+        process.arguments = [
+            "-readonly",
+            "-cmd", "PRAGMA busy_timeout=200;",
+            database.path,
+            sql
+        ]
         process.standardOutput = output
         process.standardError = Pipe()
         do {
@@ -288,6 +347,8 @@ struct AgentStatusScanner: Sendable {
     }
 }
 
+// MARK: - AgentMonitorStore
+
 @MainActor
 final class AgentMonitorStore: ObservableObject {
     @Published private(set) var summaries: [AgentSourceSummary] = AgentSource.allCases.map {
@@ -295,35 +356,146 @@ final class AgentMonitorStore: ObservableObject {
     }
 
     private let scanner: AgentStatusScanner
+    private let paths: AgentMonitorPaths
+
+    /// Fallback polling timer – fires every 1 s to catch anything the file
+    /// watchers might miss (e.g. SQLite WAL checkpoints written in-place).
     private var timerCancellable: AnyCancellable?
-    private var isRefreshing = false
+
+    /// kqueue / DispatchSource watchers for individual paths.
+    private var fsWatchers: [DispatchSourceFileSystemObject] = []
+
+    /// NSWorkspace app-launch / terminate observers.
+    private var workspaceCancellables = Set<AnyCancellable>()
+
+    /// Guards against overlapping concurrent scans.
+    private var scanTask: Task<Void, Never>?
+
+    // MARK: - Init
 
     init(scanner: AgentStatusScanner = AgentStatusScanner()) {
         self.scanner = scanner
+        self.paths = scanner.paths
     }
 
     func startMonitoring() {
         guard timerCancellable == nil else { return }
-        refresh()
-        timerCancellable = Timer.publish(every: 2, on: .main, in: .common)
+
+        // 1. Immediate first scan.
+        scheduleRefresh(debounceMs: 0)
+
+        // 2. Fallback polling every 1 s (halved from original 2 s).
+        timerCancellable = Timer.publish(every: 1, on: .main, in: .common)
             .autoconnect()
-            .sink { [weak self] _ in self?.refresh() }
+            .sink { [weak self] _ in self?.scheduleRefresh(debounceMs: 0) }
+
+        // 3. kqueue file-system watchers for instant reaction.
+        startFileSystemWatchers()
+
+        // 4. NSWorkspace notifications for app launch / terminate.
+        startWorkspaceObservers()
     }
 
-    func refresh() {
-        guard !isRefreshing else { return }
-        isRefreshing = true
+    // MARK: - Refresh scheduling
+
+    /// Cancels any in-flight scan and starts a new one after `debounceMs` milliseconds.
+    /// Pass 0 to fire immediately; a small value coalesces rapid filesystem events.
+    private func scheduleRefresh(debounceMs: Int) {
+        scanTask?.cancel()
+        scanTask = Task { [weak self] in
+            if debounceMs > 0 {
+                try? await Task.sleep(nanoseconds: UInt64(debounceMs) * 1_000_000)
+            }
+            guard !Task.isCancelled else { return }
+            await self?.performScan()
+        }
+    }
+
+    private func performScan() async {
         let runningBundleIdentifiers = Set(
             NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier)
         )
         let scanner = scanner
-        Task { [weak self] in
-            let summaries = await Task.detached(priority: .utility) {
-                scanner.scan(runningBundleIdentifiers: runningBundleIdentifiers)
-            }.value
-            guard let self else { return }
-            self.summaries = summaries
-            self.isRefreshing = false
+        let newSummaries = await Task.detached(priority: .utility) {
+            scanner.scan(runningBundleIdentifiers: runningBundleIdentifiers)
+        }.value
+
+        // Only publish if something actually changed to avoid unnecessary SwiftUI redraws.
+        if newSummaries != summaries {
+            summaries = newSummaries
         }
+    }
+
+    // MARK: - File-system watchers (kqueue via DispatchSource)
+
+    private func startFileSystemWatchers() {
+        // Cancel existing watchers first.
+        fsWatchers.forEach { $0.cancel() }
+        fsWatchers.removeAll()
+
+        let targets = paths.watchTargets
+        for url in targets {
+            guard let source = makeFileWatcher(for: url) else { continue }
+            fsWatchers.append(source)
+        }
+    }
+
+    private func makeFileWatcher(for url: URL) -> DispatchSourceFileSystemObject? {
+        // Open with O_EVTONLY so we can watch without preventing deletion.
+        let fd = open(url.path, O_EVTONLY)
+        guard fd >= 0 else { return nil }
+
+        let source = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: fd,
+            eventMask: [.write, .rename, .delete, .extend, .attrib, .link],
+            queue: .global(qos: .utility)
+        )
+
+        source.setEventHandler { [weak self] in
+            // We're on .global(qos: .utility). Jump to main actor via GCD
+            // and use assumeIsolated so Swift 6 recognises the @MainActor
+            // isolation without creating a new Task (avoids actor-hop latency).
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    self?.scheduleRefresh(debounceMs: 150)
+                }
+            }
+        }
+
+        source.setCancelHandler { close(fd) }
+        source.resume()
+        return source
+    }
+
+    // MARK: - NSWorkspace observers
+
+    private func startWorkspaceObservers() {
+        let nc = NSWorkspace.shared.notificationCenter
+
+        // App launched → refresh immediately (a new agent app just started).
+        NotificationCenter.Publisher(center: nc, name: NSWorkspace.didLaunchApplicationNotification)
+            .compactMap { $0.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication }
+            .filter { app in AgentSource.allCases.contains { $0.bundleIdentifier == app.bundleIdentifier } }
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                MainActor.assumeIsolated { self?.scheduleRefresh(debounceMs: 400) }
+            }
+            .store(in: &workspaceCancellables)
+
+        // App terminated → refresh immediately (remove counts for closed app).
+        NotificationCenter.Publisher(center: nc, name: NSWorkspace.didTerminateApplicationNotification)
+            .compactMap { $0.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication }
+            .filter { app in AgentSource.allCases.contains { $0.bundleIdentifier == app.bundleIdentifier } }
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                MainActor.assumeIsolated { self?.scheduleRefresh(debounceMs: 200) }
+            }
+            .store(in: &workspaceCancellables)
+    }
+
+    // MARK: - Public imperative refresh (called from outside if needed)
+
+    func refresh() {
+        scheduleRefresh(debounceMs: 0)
     }
 }
