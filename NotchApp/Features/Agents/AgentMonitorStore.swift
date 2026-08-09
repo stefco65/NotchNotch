@@ -452,9 +452,13 @@ final class AgentMonitorStore: ObservableObject {
         )
 
         source.setEventHandler { [weak self] in
-            // Coalesce rapid bursts (e.g. lock-file storm when many agents start).
+            // We're on .global(qos: .utility). Jump to main actor via GCD
+            // and use assumeIsolated so Swift 6 recognises the @MainActor
+            // isolation without creating a new Task (avoids actor-hop latency).
             DispatchQueue.main.async {
-                self?.scheduleRefresh(debounceMs: 150)
+                MainActor.assumeIsolated {
+                    self?.scheduleRefresh(debounceMs: 150)
+                }
             }
         }
 
@@ -473,7 +477,9 @@ final class AgentMonitorStore: ObservableObject {
             .compactMap { $0.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication }
             .filter { app in AgentSource.allCases.contains { $0.bundleIdentifier == app.bundleIdentifier } }
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.scheduleRefresh(debounceMs: 400) }
+            .sink { [weak self] _ in
+                MainActor.assumeIsolated { self?.scheduleRefresh(debounceMs: 400) }
+            }
             .store(in: &workspaceCancellables)
 
         // App terminated → refresh immediately (remove counts for closed app).
@@ -481,7 +487,9 @@ final class AgentMonitorStore: ObservableObject {
             .compactMap { $0.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication }
             .filter { app in AgentSource.allCases.contains { $0.bundleIdentifier == app.bundleIdentifier } }
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.scheduleRefresh(debounceMs: 200) }
+            .sink { [weak self] _ in
+                MainActor.assumeIsolated { self?.scheduleRefresh(debounceMs: 200) }
+            }
             .store(in: &workspaceCancellables)
     }
 
