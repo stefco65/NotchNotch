@@ -169,12 +169,31 @@ struct AgentStatusScanner: Sendable {
         }
     }
 
+    /// Map a raw Antigravity step status integer to an agent activity state.
+    /// Values observed in real databases:
+    ///   2 = in-progress / generating
+    ///   3 = done / completed
+    ///   7 = stopped / aborted
     static func antigravityState(status: Int) -> AgentActivityState {
         switch status {
-        case 0, 1, 2, 4: .working
-        case 3, 6, 8: .done
-        default: .stopped
+        case 2:         return .working
+        case 3:         return .done
+        case 7:         return .stopped
+        default:
+            // Treat any unknown status below 3 as working (still initialising),
+            // anything above as done to avoid false stopped counts.
+            return status < 3 ? .working : .done
         }
+    }
+
+    /// Derive the overall state of one conversation from all its step statuses.
+    /// Priority: working > stopped > done.
+    static func antigravityConversationState(statuses: [Int]) -> AgentActivityState {
+        guard !statuses.isEmpty else { return .done }
+        let states = statuses.map { antigravityState(status: $0) }
+        if states.contains(.working) { return .working }
+        if states.contains(.stopped) { return .stopped }
+        return .done
     }
 
     private func scanCodex() -> AgentCounts {
@@ -256,22 +275,28 @@ struct AgentStatusScanner: Sendable {
         })
 
         var counts = AgentCounts()
+        var found = 0
         for identifier in identifiers {
             let database = paths.antigravityConversations
                 .appendingPathComponent(identifier)
                 .appendingPathExtension("db")
             guard FileManager.default.fileExists(atPath: database.path) else { continue }
-            let value = sqliteQuery(
+            // Fetch ALL step statuses for this conversation, not just the last one.
+            // A conversation is "working" if any step is in-progress (status=2),
+            // "stopped" if any step was aborted (status=7) and none are running,
+            // "done" otherwise.
+            let rows = sqliteQuery(
                 database: database,
-                sql: "SELECT status FROM steps ORDER BY idx DESC LIMIT 1;"
-            ).first
-            counts.add(value.flatMap(Int.init).map(Self.antigravityState) ?? .stopped)
+                sql: "SELECT DISTINCT status FROM steps;"
+            )
+            let statuses = rows.compactMap(Int.init)
+            guard !statuses.isEmpty else { continue }
+            found += 1
+            counts.add(Self.antigravityConversationState(statuses: statuses))
         }
 
-        // If the app_storage approach found nothing, also check all conversation DBs directly.
-        if counts.working + counts.stopped + counts.done == 0 {
-            let fallback = scanAntigravityFromConversations()
-            return fallback
+        if found == 0 {
+            return scanAntigravityFromConversations()
         }
         return counts
     }
@@ -289,11 +314,13 @@ struct AgentStatusScanner: Sendable {
             let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey])
                 .contentModificationDate) ?? .distantPast
             guard modified > cutoff else { continue }
-            let value = sqliteQuery(
+            let rows = sqliteQuery(
                 database: url,
-                sql: "SELECT status FROM steps ORDER BY idx DESC LIMIT 1;"
-            ).first
-            counts.add(value.flatMap(Int.init).map(Self.antigravityState) ?? .stopped)
+                sql: "SELECT DISTINCT status FROM steps;"
+            )
+            let statuses = rows.compactMap(Int.init)
+            guard !statuses.isEmpty else { continue }
+            counts.add(Self.antigravityConversationState(statuses: statuses))
         }
         return counts
     }
