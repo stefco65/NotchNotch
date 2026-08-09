@@ -358,6 +358,8 @@ final class AgentMonitorStore: ObservableObject {
     /// Guards against overlapping concurrent scans.
     private var scanTask: Task<Void, Never>?
 
+    // MARK: - Init
+
     init(scanner: AgentStatusScanner = AgentStatusScanner()) {
         self.scanner = scanner
         self.paths = scanner.paths
@@ -367,12 +369,12 @@ final class AgentMonitorStore: ObservableObject {
         guard timerCancellable == nil else { return }
 
         // 1. Immediate first scan.
-        scheduleRefresh(debounce: .zero)
+        scheduleRefresh(debounceMs: 0)
 
         // 2. Fallback polling every 1 s (halved from original 2 s).
         timerCancellable = Timer.publish(every: 1, on: .main, in: .common)
             .autoconnect()
-            .sink { [weak self] _ in self?.scheduleRefresh(debounce: .zero) }
+            .sink { [weak self] _ in self?.scheduleRefresh(debounceMs: 0) }
 
         // 3. kqueue file-system watchers for instant reaction.
         startFileSystemWatchers()
@@ -383,14 +385,13 @@ final class AgentMonitorStore: ObservableObject {
 
     // MARK: - Refresh scheduling
 
-    /// Cancels any in-flight scan and starts a new one after `debounce`.
-    /// A zero debounce fires immediately; a small debounce coalesces rapid
-    /// filesystem events (e.g. many lock files written in quick succession).
-    private func scheduleRefresh(debounce: DispatchTimeInterval) {
+    /// Cancels any in-flight scan and starts a new one after `debounceMs` milliseconds.
+    /// Pass 0 to fire immediately; a small value coalesces rapid filesystem events.
+    private func scheduleRefresh(debounceMs: Int) {
         scanTask?.cancel()
         scanTask = Task { [weak self] in
-            if case .milliseconds(let ms) = debounce, ms > 0 {
-                try? await Task.sleep(nanoseconds: UInt64(ms) * 1_000_000)
+            if debounceMs > 0 {
+                try? await Task.sleep(nanoseconds: UInt64(debounceMs) * 1_000_000)
             }
             guard !Task.isCancelled else { return }
             await self?.performScan()
@@ -440,7 +441,7 @@ final class AgentMonitorStore: ObservableObject {
         source.setEventHandler { [weak self] in
             // Coalesce rapid bursts (e.g. lock-file storm when many agents start).
             DispatchQueue.main.async {
-                self?.scheduleRefresh(debounce: .milliseconds(150))
+                self?.scheduleRefresh(debounceMs: 150)
             }
         }
 
@@ -459,7 +460,7 @@ final class AgentMonitorStore: ObservableObject {
             .compactMap { $0.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication }
             .filter { app in AgentSource.allCases.contains { $0.bundleIdentifier == app.bundleIdentifier } }
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.scheduleRefresh(debounce: .milliseconds(400)) }
+            .sink { [weak self] _ in self?.scheduleRefresh(debounceMs: 400) }
             .store(in: &workspaceCancellables)
 
         // App terminated → refresh immediately (remove counts for closed app).
@@ -467,13 +468,13 @@ final class AgentMonitorStore: ObservableObject {
             .compactMap { $0.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication }
             .filter { app in AgentSource.allCases.contains { $0.bundleIdentifier == app.bundleIdentifier } }
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.scheduleRefresh(debounce: .milliseconds(200)) }
+            .sink { [weak self] _ in self?.scheduleRefresh(debounceMs: 200) }
             .store(in: &workspaceCancellables)
     }
 
     // MARK: - Public imperative refresh (called from outside if needed)
 
     func refresh() {
-        scheduleRefresh(debounce: .zero)
+        scheduleRefresh(debounceMs: 0)
     }
 }
