@@ -180,19 +180,26 @@ struct AgentStatusScanner: Sendable {
         case 3:         return .done
         case 7:         return .stopped
         default:
-            // Treat any unknown status below 3 as working (still initialising),
-            // anything above as done to avoid false stopped counts.
             return status < 3 ? .working : .done
         }
     }
 
-    /// Derive the overall state of one conversation from all its step statuses.
-    /// Priority: working > stopped > done.
-    static func antigravityConversationState(statuses: [Int]) -> AgentActivityState {
-        guard !statuses.isEmpty else { return .done }
-        let states = statuses.map { antigravityState(status: $0) }
-        if states.contains(.working) { return .working }
-        if states.contains(.stopped) { return .stopped }
+    /// Derive the overall state of one conversation from its step data.
+    /// Rules:
+    ///  1. The LAST step's status wins for working/done/stopped.
+    ///     (A single intermediate aborted step should not make a finished
+    ///      conversation appear as stopped.)
+    ///  2. If the last step is in-progress but there is also a more-recent
+    ///     finished step, we trust the finished one.
+    static func antigravityConversationState(
+        lastStatus: Int,
+        hasWorkingStep: Bool
+    ) -> AgentActivityState {
+        // If last step is definitively done or stopped, trust it.
+        if lastStatus == 3 { return .done }
+        if lastStatus == 7 { return .stopped }
+        // Last step is in-progress (2) or unknown.
+        if hasWorkingStep { return .working }
         return .done
     }
 
@@ -259,68 +266,47 @@ struct AgentStatusScanner: Sendable {
     }
 
     private func scanAntigravity() -> AgentCounts {
-        guard let data = try? Data(contentsOf: paths.antigravityAppStorage),
-              let storage = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let text = storage["aux-pane-session"] as? String else {
-            return scanAntigravityFromConversations()
-        }
-        let pattern = #"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"#
-        guard let regex = try? NSRegularExpression(pattern: pattern) else {
-            return AgentCounts()
-        }
-        let range = NSRange(text.startIndex..., in: text)
-        let identifiers = Set(regex.matches(in: text, range: range).compactMap { match -> String? in
-            guard let swiftRange = Range(match.range, in: text) else { return nil }
-            return String(text[swiftRange]).lowercased()
-        })
-
-        var counts = AgentCounts()
-        var found = 0
-        for identifier in identifiers {
-            let database = paths.antigravityConversations
-                .appendingPathComponent(identifier)
-                .appendingPathExtension("db")
-            guard FileManager.default.fileExists(atPath: database.path) else { continue }
-            // Fetch ALL step statuses for this conversation, not just the last one.
-            // A conversation is "working" if any step is in-progress (status=2),
-            // "stopped" if any step was aborted (status=7) and none are running,
-            // "done" otherwise.
-            let rows = sqliteQuery(
-                database: database,
-                sql: "SELECT DISTINCT status FROM steps;"
-            )
-            let statuses = rows.compactMap(Int.init)
-            guard !statuses.isEmpty else { continue }
-            found += 1
-            counts.add(Self.antigravityConversationState(statuses: statuses))
-        }
-
-        if found == 0 {
-            return scanAntigravityFromConversations()
-        }
-        return counts
+        // Always scan all recent conversation DBs directly.
+        // The aux-pane-session field in app_storage.json is often empty
+        // (it only contains IDs of currently open side-panel sessions),
+        // so we cannot rely on it as the primary source.
+        return scanAntigravityFromConversations()
     }
 
-    /// Fallback: scan all conversation databases directly from the conversations directory.
+    /// Scan all conversation databases in the conversations directory.
+    /// Only includes DBs modified within the last hour to avoid counting
+    /// old finished sessions.
     private func scanAntigravityFromConversations() -> AgentCounts {
         guard let urls = try? FileManager.default.contentsOfDirectory(
             at: paths.antigravityConversations,
             includingPropertiesForKeys: [.contentModificationDateKey]
         ) else { return AgentCounts() }
 
-        let cutoff = Date().addingTimeInterval(-3600) // only care about last hour
+        let cutoff = Date().addingTimeInterval(-3600)
         var counts = AgentCounts()
+
         for url in urls where url.pathExtension == "db" {
             let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey])
                 .contentModificationDate) ?? .distantPast
             guard modified > cutoff else { continue }
-            let rows = sqliteQuery(
+
+            // Fetch last step status and whether any step is currently active.
+            // Two queries: last step (to determine final state) + any in-progress.
+            let lastRow = sqliteQuery(
                 database: url,
-                sql: "SELECT DISTINCT status FROM steps;"
-            )
-            let statuses = rows.compactMap(Int.init)
-            guard !statuses.isEmpty else { continue }
-            counts.add(Self.antigravityConversationState(statuses: statuses))
+                sql: "SELECT status FROM steps ORDER BY idx DESC LIMIT 1;"
+            ).first
+            guard let lastStatus = lastRow.flatMap(Int.init) else { continue }
+
+            let hasWorking = !sqliteQuery(
+                database: url,
+                sql: "SELECT 1 FROM steps WHERE status = 2 LIMIT 1;"
+            ).isEmpty
+
+            counts.add(Self.antigravityConversationState(
+                lastStatus: lastStatus,
+                hasWorkingStep: hasWorking
+            ))
         }
         return counts
     }
