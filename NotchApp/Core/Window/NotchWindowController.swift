@@ -115,8 +115,16 @@ final class NotchWindowController: NSWindowController {
             anchorHeight: display.anchor.rect.height
         )
         liveActivityCancellable = liveActivityCenter.$activity
+            .removeDuplicates()
             .sink { [weak self] activity in
-                MainActor.assumeIsolated { self?.updateBubble(activity: activity) }
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    // Activity visibility changes the main notch width
+                    // (right side cuts off into the bubble), so refresh
+                    // geometry together with the bubble.
+                    self.model.showsLiveActivity = activity != nil && self.state != .expanded
+                    self.refreshGeometry()
+                }
             }
     }
 
@@ -135,18 +143,22 @@ final class NotchWindowController: NSWindowController {
         super.close()
     }
 
-    /// Repositions the dynamic-island bubble against the current notch frame
-    /// and passes it the activity to display.
+    private var showsLiveActivity: Bool {
+        liveActivityCenter.activity != nil && state != .expanded
+    }
+
+    /// Repositions the dynamic-island bubble in the right slot of the compact
+    /// envelope (the part cut off from the asymmetric main notch).
     private func updateBubble(activity: LiveActivity?) {
-        let notchFrame = Self.frame(
+        let envelope = DynamicIslandLayout.compactEnvelope(
             for: state,
             display: display,
-            expandedWidth: settingsStore.expandedWidth,
-            showsNowPlaying: spotifyMusicStore.hasActiveTrack
+            showsNowPlaying: spotifyMusicStore.hasActiveTrack,
+            showsLiveActivity: showsLiveActivity
         )
         bubbleController?.update(
             activity: activity,
-            notchFrame: notchFrame,
+            envelope: envelope,
             notchWindow: window,
             isNotchExpanded: state == .expanded
         )
@@ -165,19 +177,23 @@ final class NotchWindowController: NSWindowController {
     func refreshGeometry(showsNowPlaying: Bool? = nil) {
         guard let window else { return }
         let showsNowPlaying = showsNowPlaying ?? spotifyMusicStore.hasActiveTrack
+        let liveActivity = showsLiveActivity
+        model.showsLiveActivity = liveActivity
         let radii = Self.surfaceRadii(for: state)
         let targetFrame = Self.frame(
             for: state,
             display: display,
             expandedWidth: settingsStore.expandedWidth,
-            showsNowPlaying: showsNowPlaying
+            showsNowPlaying: showsNowPlaying,
+            showsLiveActivity: liveActivity
         )
         surfaceHostView?.setSurfaceAppearance(
             bottomRadius: radii.bottom,
             shoulderRadius: radii.shoulder,
             horizontalScale: Self.surfaceHorizontalScale(
                 for: state,
-                showsNowPlaying: showsNowPlaying
+                showsNowPlaying: showsNowPlaying,
+                showsLiveActivity: liveActivity
             ),
             targetWindowFrame: targetFrame,
             springParams: AnimationSpring.forState(state),
@@ -248,13 +264,15 @@ final class NotchWindowController: NSWindowController {
             collapsedRect: Self.frame(
                 for: .collapsed,
                 display: display,
-                showsNowPlaying: false
+                showsNowPlaying: false,
+                showsLiveActivity: showsLiveActivity
             )
                 .insetBy(dx: -10, dy: -8),
             hoverRect: Self.frame(
                 for: .hovered,
                 display: display,
-                showsNowPlaying: spotifyMusicStore.hasActiveTrack
+                showsNowPlaying: spotifyMusicStore.hasActiveTrack,
+                showsLiveActivity: showsLiveActivity
             )
                 .insetBy(dx: -12, dy: -10)
         )
@@ -270,7 +288,8 @@ final class NotchWindowController: NSWindowController {
             Self.frame(
                 for: .musicPreview,
                 display: display,
-                showsNowPlaying: true
+                showsNowPlaying: true,
+                showsLiveActivity: showsLiveActivity
             )
                 .insetBy(dx: -12, dy: -10)
                 .contains(point)
@@ -293,13 +312,17 @@ final class NotchWindowController: NSWindowController {
         let artworkSurfaceFrame = Self.frame(
             for: artworkSurfaceState,
             display: display,
-            showsNowPlaying: true
+            showsNowPlaying: true,
+            showsLiveActivity: showsLiveActivity
         )
         return Self.musicArtworkHoverFrame(in: artworkSurfaceFrame).contains(point)
     }
 
     private func playbackControlFrame(in panelFrame: CGRect) -> CGRect? {
+        // When the island is split the right slot belongs to the live-activity
+        // bubble, so there is no in-notch playback hit target.
         guard spotifyMusicStore.hasActiveTrack,
+              !showsLiveActivity,
               state == .collapsed || state == .musicPreview else { return nil }
         return CGRect(
             x: panelFrame.maxX - 46,
@@ -340,14 +363,17 @@ final class NotchWindowController: NSWindowController {
         guard let window, newState != state || !window.isVisible else { return }
         state = newState
 
+        let liveActivity = liveActivityCenter.activity != nil && newState != .expanded
         let radii = Self.surfaceRadii(for: newState)
         let targetFrame = Self.frame(
             for: newState,
             display: display,
             expandedWidth: settingsStore.expandedWidth,
-            showsNowPlaying: spotifyMusicStore.hasActiveTrack
+            showsNowPlaying: spotifyMusicStore.hasActiveTrack,
+            showsLiveActivity: liveActivity
         )
         model.surfaceState = newState
+        model.showsLiveActivity = liveActivity
 
         let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         let params = AnimationSpring.forState(newState)
@@ -358,7 +384,8 @@ final class NotchWindowController: NSWindowController {
             shoulderRadius: radii.shoulder,
             horizontalScale: Self.surfaceHorizontalScale(
                 for: newState,
-                showsNowPlaying: spotifyMusicStore.hasActiveTrack
+                showsNowPlaying: spotifyMusicStore.hasActiveTrack,
+                showsLiveActivity: liveActivity
             ),
             targetWindowFrame: targetFrame,
             springParams: params,
@@ -380,36 +407,32 @@ final class NotchWindowController: NSWindowController {
         for state: SurfaceState,
         display: DisplayDescriptor,
         expandedWidth: Double = 760,
-        showsNowPlaying: Bool = false
+        showsNowPlaying: Bool = false,
+        showsLiveActivity: Bool = false
     ) -> CGRect {
-        let anchor = display.anchor.rect
-        let baseWidth: CGFloat
-        let height: CGFloat
-
-        switch state {
-        case .collapsed:
-            baseWidth = max(anchor.width, 120) + (showsNowPlaying ? 100 : 0)
-            height = max(anchor.height, 12)
-        case .hovered:
-            baseWidth = max(anchor.width, 120) + (showsNowPlaying ? 100 : 40)
-            height = max(anchor.height, 12) + 20
-        case .musicPreview:
-            baseWidth = max(anchor.width, 120) + (showsNowPlaying ? 100 : 40)
-            height = max(anchor.height, 12) + 64
-        case .expanded:
-            baseWidth = min(
+        if state == .expanded {
+            let baseWidth = min(
                 max(CGFloat(expandedWidth), CGFloat(SettingsStore.minimumExpandedWidth)),
                 display.frame.width - 48
             )
-            height = 204
+            return CGRect(
+                x: display.frame.midX - baseWidth / 2,
+                y: display.frame.maxY - 204,
+                width: baseWidth,
+                height: 204
+            ).integral
         }
 
-        return CGRect(
-            x: display.frame.midX - baseWidth / 2,
-            y: display.frame.maxY - height,
-            width: baseWidth,
-            height: height
-        ).integral
+        let envelope = DynamicIslandLayout.compactEnvelope(
+            for: state,
+            display: display,
+            showsNowPlaying: showsNowPlaying,
+            showsLiveActivity: showsLiveActivity
+        )
+        return DynamicIslandLayout.mainNotchFrame(
+            envelope: envelope,
+            showsLiveActivity: showsLiveActivity
+        )
     }
 
     static func surfaceRadii(for state: SurfaceState) -> (bottom: CGFloat, shoulder: CGFloat) {
@@ -427,9 +450,14 @@ final class NotchWindowController: NSWindowController {
 
     static func surfaceHorizontalScale(
         for state: SurfaceState,
-        showsNowPlaying: Bool
+        showsNowPlaying: Bool,
+        showsLiveActivity: Bool = false
     ) -> CGFloat {
-        state == .collapsed && showsNowPlaying ? 280 / 300 : 1
+        // The classic music capsule slightly under-fills the window. When the
+        // island is split the window already matches the asymmetric body, so
+        // keep scale at 1 to avoid double-shrinking the right edge.
+        guard state == .collapsed, showsNowPlaying, !showsLiveActivity else { return 1 }
+        return 280 / 300
     }
 }
 
@@ -476,6 +504,10 @@ private final class OverlayPresentationModel: ObservableObject {
 
     @Published var surfaceState: NotchWindowController.SurfaceState = .collapsed
     @Published var selectedTab: ExpandedTab = .notch
+    /// True while the right Dynamic Island pill is detached — the compact
+    /// music surface hides its right-side playback indicator so that slot
+    /// belongs to the live-activity bubble.
+    @Published var showsLiveActivity = false
     var onToggle: (() -> Void)?
     var onOpenSettings: (() -> Void)?
     var onMusicArtworkHover: (() -> Void)?
@@ -494,7 +526,8 @@ private struct OverlaySurfaceView: View {
         let radii = NotchWindowController.surfaceRadii(for: model.surfaceState)
         let horizontalScale = NotchWindowController.surfaceHorizontalScale(
             for: model.surfaceState,
-            showsNowPlaying: spotifyMusicStore.hasActiveTrack
+            showsNowPlaying: spotifyMusicStore.hasActiveTrack,
+            showsLiveActivity: model.showsLiveActivity
         )
         let shape = NotchSurfaceShape(
             bottomRadius: radii.bottom,
@@ -534,6 +567,7 @@ private struct OverlaySurfaceView: View {
 
     private var usesMusicTapZones: Bool {
         spotifyMusicStore.hasActiveTrack
+            && !model.showsLiveActivity
             && (model.surfaceState == .collapsed || model.surfaceState == .musicPreview)
     }
 
@@ -547,6 +581,7 @@ private struct OverlaySurfaceView: View {
                     NowPlayingSurface(
                         store: spotifyMusicStore,
                         isPreviewExpanded: model.surfaceState == .musicPreview,
+                        showsLiveActivity: model.showsLiveActivity,
                         onOpen: { model.onToggle?() },
                         onArtworkHover: { model.onMusicArtworkHover?() }
                     )
@@ -723,6 +758,7 @@ private struct OverlaySurfaceView: View {
 private struct NowPlayingSurface: View {
     @ObservedObject var store: SpotifyMusicStore
     let isPreviewExpanded: Bool
+    let showsLiveActivity: Bool
     let onOpen: () -> Void
     let onArtworkHover: () -> Void
 
@@ -753,26 +789,28 @@ private struct NowPlayingSurface: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .accessibilityLabel("Otwórz pełny notch")
 
-                    VStack(spacing: 0) {
-                        Button {
-                            store.perform(.playPause)
-                        } label: {
-                            Color.clear
-                                .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .frame(height: 36)
-                        .accessibilityLabel(store.track.isPlaying ? "Wstrzymaj" : "Odtwórz")
+                    if !showsLiveActivity {
+                        VStack(spacing: 0) {
+                            Button {
+                                store.perform(.playPause)
+                            } label: {
+                                Color.clear
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .frame(height: 36)
+                            .accessibilityLabel(store.track.isPlaying ? "Wstrzymaj" : "Odtwórz")
 
-                        Button(action: onOpen) {
-                            Color.clear
-                                .contentShape(Rectangle())
+                            Button(action: onOpen) {
+                                Color.clear
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .frame(maxHeight: .infinity)
+                            .accessibilityHidden(true)
                         }
-                        .buttonStyle(.plain)
-                        .frame(maxHeight: .infinity)
-                        .accessibilityHidden(true)
+                        .frame(width: 46)
                     }
-                    .frame(width: 46)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .zIndex(2)
@@ -810,18 +848,21 @@ private struct NowPlayingSurface: View {
                     )
                     .allowsHitTesting(false)
 
-                CompactPlaybackIndicator(isPlaying: store.track.isPlaying)
-                    .frame(width: 24, height: 24)
-                    .position(
-                        x: geometry.size.width - NowPlayingLayout.playbackRightInset,
-                        y: 14
-                    )
-                    .animation(
-                        .easeInOut(duration: 0.22),
-                        value: isPreviewExpanded
-                    )
-                    .accessibilityHidden(true)
-                    .allowsHitTesting(false)
+                if !showsLiveActivity {
+                    CompactPlaybackIndicator(isPlaying: store.track.isPlaying)
+                        .frame(width: 24, height: 24)
+                        .position(
+                            x: geometry.size.width - NowPlayingLayout.playbackRightInset,
+                            y: 14
+                        )
+                        .animation(
+                            .easeInOut(duration: 0.22),
+                            value: isPreviewExpanded
+                        )
+                        .accessibilityHidden(true)
+                        .allowsHitTesting(false)
+                        .transition(.opacity)
+                }
 
                 MarqueeTrackInfo(
                     text: trackSummary,

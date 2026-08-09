@@ -97,17 +97,49 @@ final class LiveActivityCenterTests: XCTestCase {
         )
     }
 
-    func testBubbleGeometry() {
-        // Bubble stays smaller than the notch and clamps for tiny anchors.
-        XCTAssertEqual(DynamicIslandBubbleController.bubbleDiameter(anchorHeight: 37), 29)
-        XCTAssertEqual(DynamicIslandBubbleController.bubbleDiameter(anchorHeight: 12), 22)
-        XCTAssertEqual(DynamicIslandBubbleController.bubbleDiameter(anchorHeight: 60), 32)
+    func testSplitGeometryCutsRightSlotFromEnvelope() {
+        let display = DisplayDescriptor(
+            id: 1,
+            frame: CGRect(x: 0, y: 0, width: 1000, height: 1000),
+            visibleFrame: CGRect(x: 0, y: 0, width: 1000, height: 975),
+            safeAreaInsets: .init(top: 26, left: 0, bottom: 0, right: 0),
+            scaleFactor: 2,
+            anchor: .physicalNotch(
+                .init(
+                    rect: CGRect(x: 400, y: 974, width: 200, height: 26),
+                    topInset: 26,
+                    leftAuxiliaryArea: .zero,
+                    rightAuxiliaryArea: .zero
+                )
+            )
+        )
 
-        // Window overlaps the notch's right edge and shares its top edge.
-        let notch = CGRect(x: 100, y: 900, width: 300, height: 37)
-        let frame = DynamicIslandBubbleController.windowFrame(nextTo: notch)
-        XCTAssertEqual(frame.minX, notch.maxX - DynamicIslandBubbleController.notchOverlap)
-        XCTAssertEqual(frame.maxY, notch.maxY)
-        XCTAssertEqual(frame.width, DynamicIslandBubbleController.windowWidth)
+        let envelope = DynamicIslandLayout.compactEnvelope(
+            for: .collapsed,
+            display: display,
+            showsNowPlaying: true,
+            showsLiveActivity: true
+        )
+        XCTAssertEqual(envelope, CGRect(x: 350, y: 974, width: 300, height: 26))
+
+        let main = DynamicIslandLayout.mainNotchFrame(
+            envelope: envelope,
+            showsLiveActivity: true
+        )
+        let slot = DynamicIslandLayout.bubbleSlotWidth(surfaceHeight: envelope.height)
+        XCTAssertEqual(main.minX, envelope.minX)
+        XCTAssertEqual(
+            main.width,
+            envelope.width - DynamicIslandLayout.splitGap - slot
+        )
+        // Asymmetric: centroid shifts left of the display center.
+        XCTAssertLessThan(main.midX, display.frame.midX)
+
+        let bubbleWindow = DynamicIslandLayout.bubbleWindowFrame(envelope: envelope)
+        XCTAssertGreaterThanOrEqual(bubbleWindow.maxX, envelope.maxX - 1)
+        XCTAssertEqual(bubbleWindow.maxY, envelope.maxY)
+
+        XCTAssertEqual(DynamicIslandLayout.bubbleDiameter(anchorHeight: 37), 29)
+        XCTAssertEqual(DynamicIslandLayout.bubbleDiameter(anchorHeight: 12), 22)
     }
 }

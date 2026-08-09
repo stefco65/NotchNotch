@@ -22,6 +22,7 @@ swiftc \
     NotchApp/Features/Agents/AgentMonitorStore.swift \
     NotchApp/Features/Agents/AgentMonitorComponentView.swift \
     NotchApp/Features/LiveActivity/LiveActivityCenter.swift \
+    NotchApp/Features/LiveActivity/DynamicIslandLayout.swift \
     NotchApp/Features/LiveActivity/DynamicIslandBubbleController.swift \
     NotchApp/Features/Music/SpotifyMusicStore.swift \
     NotchApp/Features/Music/MusicComponentView.swift \

@@ -1,47 +1,18 @@
 import AppKit
 import SwiftUI
 
-/// A small detached black bubble floating right of the notch, in the spirit
-/// of the iOS Dynamic Island split view. It slides out from underneath the
-/// notch window (which is ordered above it, so the overlap is invisible on
-/// black) and presents the current `LiveActivity`.
+/// Detached right pill of the Dynamic Island. It occupies the right slot of
+/// the compact music-expanded envelope while the main notch keeps the left
+/// (making the notch asymmetric). Ordered below the notch window so the
+/// attach/detach animation reads as the right side cutting off.
 @MainActor
 final class DynamicIslandBubbleController {
-    /// Horizontal overlap between the bubble window and the notch window.
-    /// The bubble parks inside this overlap while hidden, so showing it looks
-    /// like it detaches from the notch.
-    nonisolated static let notchOverlap: CGFloat = 36
-    /// Gap between the notch edge and the resting bubble.
-    nonisolated static let notchGap: CGFloat = 8
-    /// Extra room on the trailing side for multi-digit counts and the
-    /// scale-bounce of the show animation.
-    nonisolated static let windowWidth: CGFloat = 140
-    nonisolated static let windowHeight: CGFloat = 48
-
-    nonisolated static func bubbleDiameter(anchorHeight: CGFloat) -> CGFloat {
-        max(min(anchorHeight - 8, 32), 22)
-    }
-
-    /// Frame of the bubble window positioned against the notch surface frame.
-    /// The window's top edge matches the display top (like the notch panel).
-    nonisolated static func windowFrame(nextTo notchFrame: CGRect) -> CGRect {
-        CGRect(
-            x: notchFrame.maxX - notchOverlap,
-            y: notchFrame.maxY - windowHeight,
-            width: windowWidth,
-            height: windowHeight
-        ).integral
-    }
-
     private let panel: NSPanel
     private let model = DynamicIslandBubbleModel()
-    private let anchorHeight: CGFloat
 
     init(anchorHeight: CGFloat) {
-        self.anchorHeight = anchorHeight
-
         panel = NSPanel(
-            contentRect: CGRect(x: 0, y: 0, width: Self.windowWidth, height: Self.windowHeight),
+            contentRect: CGRect(x: 0, y: 0, width: 120, height: 48),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -56,9 +27,12 @@ final class DynamicIslandBubbleController {
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         panel.animationBehavior = .none
 
-        model.diameter = Self.bubbleDiameter(anchorHeight: anchorHeight)
-        model.topPadding = (max(anchorHeight, 12) - model.diameter) / 2
-        model.restingOffset = Self.notchOverlap + Self.notchGap
+        model.diameter = DynamicIslandLayout.bubbleDiameter(anchorHeight: anchorHeight)
+        model.topPadding = max((max(anchorHeight, 12) - model.diameter) / 2, 0)
+        model.attachedOffset = DynamicIslandLayout.bubbleAttachedLeadingInset()
+        model.restingOffset = DynamicIslandLayout.bubbleRestingLeadingInset(
+            envelope: CGRect(x: 0, y: 0, width: 300, height: max(anchorHeight, 12))
+        )
 
         let hosting = NSHostingView(rootView: DynamicIslandBubbleView(model: model))
         hosting.wantsLayer = true
@@ -66,25 +40,27 @@ final class DynamicIslandBubbleController {
         panel.contentView = hosting
     }
 
-    /// Repositions the bubble against the notch and shows/hides it with the
-    /// detach animation. `notchWindow` keeps the z-order such that the bubble
-    /// stays underneath the notch surface while sliding in and out.
+    /// Repositions the bubble in the envelope's right slot and runs the
+    /// detach / reattach animation. `notchWindow` stays above the bubble so
+    /// the overlap is invisible while attached.
     func update(
         activity: LiveActivity?,
-        notchFrame: CGRect,
+        envelope: CGRect,
         notchWindow: NSWindow?,
         isNotchExpanded: Bool
     ) {
-        // Keep the last content visible during the hide animation instead of
-        // blanking the bubble mid-flight.
         if let activity {
             model.activity = activity
         }
 
-        let targetFrame = Self.windowFrame(nextTo: notchFrame)
+        model.diameter = DynamicIslandLayout.bubbleDiameter(anchorHeight: envelope.height)
+        model.topPadding = max((envelope.height - model.diameter) / 2, 0)
+        model.attachedOffset = DynamicIslandLayout.bubbleAttachedLeadingInset()
+        model.restingOffset = DynamicIslandLayout.bubbleRestingLeadingInset(envelope: envelope)
+
+        let targetFrame = DynamicIslandLayout.bubbleWindowFrame(envelope: envelope)
         if panel.frame != targetFrame {
             if panel.isVisible, model.isVisible {
-                // Follow notch width changes (hover / now-playing) smoothly.
                 NSAnimationContext.runAnimationGroup { context in
                     context.duration = 0.28
                     context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
@@ -126,7 +102,8 @@ final class DynamicIslandBubbleModel: ObservableObject {
     @Published var isVisible = false
     @Published var diameter: CGFloat = 28
     @Published var topPadding: CGFloat = 4
-    @Published var restingOffset: CGFloat = 44
+    @Published var attachedOffset: CGFloat = 6
+    @Published var restingOffset: CGFloat = 26
 }
 
 // MARK: - View
@@ -138,9 +115,9 @@ struct DynamicIslandBubbleView: View {
         ZStack(alignment: .topLeading) {
             bubble
                 .padding(.top, model.topPadding)
-                .offset(x: model.isVisible ? model.restingOffset : 6)
+                .offset(x: model.isVisible ? model.restingOffset : model.attachedOffset)
                 .scaleEffect(
-                    model.isVisible ? 1 : 0.45,
+                    model.isVisible ? 1 : 0.92,
                     anchor: .leading
                 )
                 .opacity(model.isVisible ? 1 : 0)
