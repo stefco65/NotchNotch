@@ -4,6 +4,8 @@ import SwiftUI
 
 /// Keeps the window transparent outside the notch while guaranteeing an opaque
 /// sRGB-black backing layer everywhere inside the rendered notch shape.
+/// Path morphing (shape animation) is driven by CASpringAnimation so it stays
+/// in lock-step with the window-frame spring animation.
 @MainActor
 final class SolidBlackNotchHostingView<Content: View>: NSView {
     private let hostingView: NSHostingView<Content>
@@ -35,33 +37,85 @@ final class SolidBlackNotchHostingView<Content: View>: NSView {
         super.layout()
         updateBackingScale()
 
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        solidBlackLayer.bounds = CGRect(origin: .zero, size: bounds.size)
-        solidBlackLayer.position = CGPoint(x: bounds.midX, y: bounds.midY)
-        solidBlackLayer.path = Self.surfacePath(
-            in: solidBlackLayer.bounds,
-            bottomRadius: bottomRadius,
-            shoulderRadius: shoulderRadius
-        )
-        CATransaction.commit()
+        // Only update without animation when no spring animation is in flight.
+        // This prevents layout() from stomping over an in-progress path animation.
+        if solidBlackLayer.animation(forKey: "notch.path") == nil {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            solidBlackLayer.bounds = CGRect(origin: .zero, size: bounds.size)
+            solidBlackLayer.position = CGPoint(x: bounds.midX, y: bounds.midY)
+            solidBlackLayer.path = Self.surfacePath(
+                in: solidBlackLayer.bounds,
+                bottomRadius: bottomRadius,
+                shoulderRadius: shoulderRadius
+            )
+            CATransaction.commit()
+        } else {
+            // Keep bounds/position in sync silently; path is handled by the animation.
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            solidBlackLayer.bounds = CGRect(origin: .zero, size: bounds.size)
+            solidBlackLayer.position = CGPoint(x: bounds.midX, y: bounds.midY)
+            CATransaction.commit()
+        }
     }
 
+    /// Update the notch shape and optionally animate it using a spring that
+    /// matches the window-frame spring so both finish at the same time.
     func setSurfaceAppearance(
         bottomRadius: CGFloat,
         shoulderRadius: CGFloat,
         horizontalScale: CGFloat = 1,
-        animationDuration: TimeInterval = 0
+        targetWindowFrame: CGRect? = nil,
+        springParams: AnimationSpring? = nil,
+        reduceMotion: Bool = false
     ) {
         let radiiChanged = self.bottomRadius != bottomRadius
             || self.shoulderRadius != shoulderRadius
         let scaleChanged = abs(self.horizontalScale - horizontalScale) > 0.0001
-        guard radiiChanged || scaleChanged else {
-            return
-        }
+
+        guard radiiChanged || scaleChanged else { return }
+
+        let oldBottomRadius = self.bottomRadius
+        let oldShoulderRadius = self.shoulderRadius
         self.bottomRadius = bottomRadius
         self.shoulderRadius = shoulderRadius
 
+        // --- Path animation ---
+        if radiiChanged {
+            let currentBounds = solidBlackLayer.bounds.isEmpty
+                ? bounds
+                : solidBlackLayer.bounds
+
+            let fromPath = Self.surfacePath(
+                in: currentBounds,
+                bottomRadius: oldBottomRadius,
+                shoulderRadius: oldShoulderRadius
+            )
+            let toPath = Self.surfacePath(
+                in: currentBounds,
+                bottomRadius: bottomRadius,
+                shoulderRadius: shoulderRadius
+            )
+
+            // Set model value immediately (no implicit animation).
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            solidBlackLayer.path = toPath
+            CATransaction.commit()
+
+            if let spring = springParams, !reduceMotion {
+                let anim = makeSpringAnimation(
+                    keyPath: "path",
+                    from: fromPath,
+                    to: toPath,
+                    spring: spring
+                )
+                solidBlackLayer.add(anim, forKey: "notch.path")
+            }
+        }
+
+        // --- Horizontal scale animation ---
         if scaleChanged {
             let previousScale = solidBlackLayer.presentation()?
                 .value(forKeyPath: "transform.scale.x") as? CGFloat
@@ -73,18 +127,40 @@ final class SolidBlackNotchHostingView<Content: View>: NSView {
             solidBlackLayer.setValue(horizontalScale, forKeyPath: "transform.scale.x")
             CATransaction.commit()
 
-            if animationDuration > 0 {
-                let animation = CABasicAnimation(keyPath: "transform.scale.x")
-                animation.fromValue = previousScale
-                animation.toValue = horizontalScale
-                animation.duration = animationDuration
-                animation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-                solidBlackLayer.add(animation, forKey: "notch.horizontalScale")
+            if let spring = springParams, !reduceMotion {
+                let anim = makeSpringAnimation(
+                    keyPath: "transform.scale.x",
+                    from: previousScale,
+                    to: horizontalScale,
+                    spring: spring
+                )
+                solidBlackLayer.add(anim, forKey: "notch.horizontalScale")
             }
         }
 
         needsLayout = true
         layoutSubtreeIfNeeded()
+    }
+
+    // MARK: - Private helpers
+
+    private func makeSpringAnimation(
+        keyPath: String,
+        from: Any,
+        to: Any,
+        spring: AnimationSpring
+    ) -> CASpringAnimation {
+        let anim = CASpringAnimation(keyPath: keyPath)
+        anim.fromValue = from
+        anim.toValue = to
+        // Convert our logical spring params to CA spring params.
+        // stiffness = mass * ω₀², damping = dampingRatio * 2 * sqrt(stiffness * mass)
+        anim.mass = spring.mass
+        anim.stiffness = spring.stiffness
+        anim.damping = spring.dampingRatio * 2 * sqrt(spring.stiffness * spring.mass)
+        anim.duration = anim.settlingDuration
+        anim.isRemovedOnCompletion = true
+        return anim
     }
 
     private func configureLayers() {
@@ -101,10 +177,11 @@ final class SolidBlackNotchHostingView<Content: View>: NSView {
         solidBlackLayer.strokeColor = nil
         solidBlackLayer.isOpaque = true
         solidBlackLayer.allowsEdgeAntialiasing = true
+        // Only suppress the automatic implicit animations for layout properties;
+        // path and scale get explicit spring animations above.
         solidBlackLayer.actions = [
             "bounds": NSNull(),
             "frame": NSNull(),
-            "path": NSNull(),
             "position": NSNull()
         ]
         layer?.insertSublayer(solidBlackLayer, at: 0)

@@ -129,10 +129,13 @@ final class NotchWindowController: NSWindowController {
     func refreshGeometry(showsNowPlaying: Bool? = nil) {
         guard let window else { return }
         let showsNowPlaying = showsNowPlaying ?? spotifyMusicStore.hasActiveTrack
-        let animationDuration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-            ? 0.1
-            : 0.2
         let radii = Self.surfaceRadii(for: state)
+        let targetFrame = Self.frame(
+            for: state,
+            display: display,
+            expandedWidth: settingsStore.expandedWidth,
+            showsNowPlaying: showsNowPlaying
+        )
         surfaceHostView?.setSurfaceAppearance(
             bottomRadius: radii.bottom,
             shoulderRadius: radii.shoulder,
@@ -140,17 +143,15 @@ final class NotchWindowController: NSWindowController {
                 for: state,
                 showsNowPlaying: showsNowPlaying
             ),
-            animationDuration: animationDuration
+            targetWindowFrame: targetFrame,
+            springParams: AnimationSpring.forState(state),
+            reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         )
-        let targetFrame = Self.frame(
-            for: state,
-            display: display,
-            expandedWidth: settingsStore.expandedWidth,
-            showsNowPlaying: showsNowPlaying
-        )
-
+        let params = AnimationSpring.forState(state)
+        let duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+            ? 0.1 : params.settlingDuration
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = animationDuration
+            context.duration = duration
             context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             window.animator().setFrame(targetFrame, display: true)
         }
@@ -303,17 +304,6 @@ final class NotchWindowController: NSWindowController {
         state = newState
 
         let radii = Self.surfaceRadii(for: newState)
-        let animationDuration = transitionDuration(for: newState)
-        surfaceHostView?.setSurfaceAppearance(
-            bottomRadius: radii.bottom,
-            shoulderRadius: radii.shoulder,
-            horizontalScale: Self.surfaceHorizontalScale(
-                for: newState,
-                showsNowPlaying: spotifyMusicStore.hasActiveTrack
-            ),
-            animationDuration: animationDuration
-        )
-
         let targetFrame = Self.frame(
             for: newState,
             display: display,
@@ -322,20 +312,30 @@ final class NotchWindowController: NSWindowController {
         )
         model.surfaceState = newState
 
+        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        let params = AnimationSpring.forState(newState)
+
+        // Animuj kształt CAShapeLayer zsynchronizowany z oknem
+        surfaceHostView?.setSurfaceAppearance(
+            bottomRadius: radii.bottom,
+            shoulderRadius: radii.shoulder,
+            horizontalScale: Self.surfaceHorizontalScale(
+                for: newState,
+                showsNowPlaying: spotifyMusicStore.hasActiveTrack
+            ),
+            targetWindowFrame: targetFrame,
+            springParams: params,
+            reduceMotion: reduceMotion
+        )
+
+        let duration = reduceMotion ? 0.1 : params.settlingDuration
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = animationDuration
+            context.duration = duration
             context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             window.animator().setFrame(targetFrame, display: true)
         }
 
         logger.debug("Surface transitioned to \(String(describing: newState), privacy: .public), frame=\(String(describing: targetFrame), privacy: .public)")
-    }
-
-    private func transitionDuration(for newState: SurfaceState) -> TimeInterval {
-        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
-            return 0.1
-        }
-        return newState == .expanded ? 0.28 : (newState == .musicPreview ? 0.22 : 0.14)
     }
 
     static func frame(
@@ -395,6 +395,40 @@ final class NotchWindowController: NSWindowController {
     }
 }
 
+// MARK: - Spring animation parameters
+
+struct AnimationSpring {
+    /// CASpringAnimation damping ratio (0..1, 1 = critically damped)
+    let dampingRatio: Double
+    /// Angular frequency of the spring
+    let stiffness: Double
+    let mass: Double
+
+    /// Approximate settling duration (95% threshold).
+    var settlingDuration: TimeInterval {
+        // heuristic: 3 * (2*mass / (dampingRatio * 2 * sqrt(stiffness*mass)))
+        let criticalDamping = 2 * sqrt(stiffness * mass)
+        let beta = dampingRatio * criticalDamping
+        guard beta > 0 else { return 0.4 }
+        return TimeInterval(min(6.0 / beta, 2.0))
+    }
+
+    static func forState(_ state: NotchWindowController.SurfaceState) -> AnimationSpring {
+        switch state {
+        case .expanded:
+            // Miękkie otwarcie – spring z lekkim odbiciem
+            return AnimationSpring(dampingRatio: 0.72, stiffness: 380, mass: 1.0)
+        case .collapsed:
+            // Szybkie zamknięcie bez odbicia
+            return AnimationSpring(dampingRatio: 0.90, stiffness: 560, mass: 1.0)
+        case .hovered:
+            return AnimationSpring(dampingRatio: 0.82, stiffness: 460, mass: 1.0)
+        case .musicPreview:
+            return AnimationSpring(dampingRatio: 0.78, stiffness: 420, mass: 1.0)
+        }
+    }
+}
+
 @MainActor
 private final class OverlayPresentationModel: ObservableObject {
     enum ExpandedTab: Equatable {
@@ -433,7 +467,7 @@ private struct OverlaySurfaceView: View {
             shape
                 .fill(Color(.sRGB, red: 0, green: 0, blue: 0, opacity: 1))
                 .scaleEffect(x: horizontalScale, y: 1, anchor: .center)
-                .animation(.easeInOut(duration: 0.14), value: horizontalScale)
+                .animation(.spring(response: 0.36, dampingFraction: 0.82), value: horizontalScale)
             surfaceContent
 
             if settingsStore.rainbowGlowEnabled,
@@ -443,7 +477,7 @@ private struct OverlaySurfaceView: View {
                     shoulderRadius: radii.shoulder
                 )
                 .scaleEffect(x: horizontalScale, y: 1, anchor: .center)
-                .animation(.easeInOut(duration: 0.14), value: horizontalScale)
+                .animation(.spring(response: 0.36, dampingFraction: 0.82), value: horizontalScale)
             }
         }
         .clipShape(shape)
@@ -482,7 +516,7 @@ private struct OverlaySurfaceView: View {
                 }
             }
             .animation(
-                .easeInOut(duration: 0.2),
+                .spring(response: 0.38, dampingFraction: 0.85),
                 value: spotifyMusicStore.hasActiveTrack
             )
         }
