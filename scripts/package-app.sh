@@ -12,6 +12,10 @@ swift build -c "$configuration"
 mkdir -p "$app_dir/Contents/MacOS" "$app_dir/Contents/Resources"
 cp "$binary_path" "$app_dir/Contents/MacOS/NotchNook"
 cp "$repo_root/NotchApp/Resources/Info.plist" "$app_dir/Contents/Info.plist"
+# Ikona aplikacji
+if [[ -f "$repo_root/NotchApp/Resources/AppIcon.icns" ]]; then
+    cp "$repo_root/NotchApp/Resources/AppIcon.icns" "$app_dir/Contents/Resources/AppIcon.icns"
+fi
 codesign --force --deep --sign - "$app_dir"
 
 echo "$app_dir"
