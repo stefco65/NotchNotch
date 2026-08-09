@@ -27,9 +27,17 @@ struct AgentMonitorComponentView: View {
 private struct AgentSourceRow: View {
     let summary: AgentSourceSummary
 
+    /// Application icons never change at runtime; fetch them once instead of
+    /// hitting NSWorkspace on every body evaluation.
+    private static let iconCache: [AgentSource: NSImage] = Dictionary(
+        uniqueKeysWithValues: AgentSource.allCases.map {
+            ($0, NSWorkspace.shared.icon(forFile: $0.applicationPath))
+        }
+    )
+
     var body: some View {
         HStack(spacing: 6) {
-            Image(nsImage: NSWorkspace.shared.icon(forFile: summary.source.applicationPath))
+            Image(nsImage: Self.iconCache[summary.source] ?? NSImage())
                 .resizable()
                 .interpolation(.high)
                 .frame(width: 22, height: 22)
@@ -84,19 +92,20 @@ private struct AgentCountField: View {
     let label: String
     let isActive: Bool
 
-    // Tracks previous value so we can flash on change.
-    @State private var displayValue: Int = 0
+    /// Short scale flash drawing attention to a change of the number.
     @State private var flashScale: CGFloat = 1
 
     var body: some View {
         HStack(spacing: 3) {
             Image(systemName: symbol)
                 .font(.system(size: 7, weight: .bold))
-            Text(displayValue.formatted())
+            // Render the store value directly – keeping a copy in local
+            // @State went stale whenever the view was re-created.
+            Text(value.formatted())
                 .font(.system(size: 10, weight: .bold, design: .rounded))
                 .monospacedDigit()
-                .contentTransition(.numericText(countsDown: value < displayValue))
-                .animation(.spring(response: 0.28, dampingFraction: 0.75), value: displayValue)
+                .contentTransition(.numericText())
+                .animation(.spring(response: 0.28, dampingFraction: 0.75), value: value)
         }
         .foregroundStyle(isActive ? color : color.opacity(0.38))
         .frame(width: 27, height: 21)
@@ -117,19 +126,12 @@ private struct AgentCountField: View {
         .accessibilityValue(value.formatted())
         .onChange(of: value) { oldVal, newVal in
             guard oldVal != newVal else { return }
-            // Animate the number change with a quick scale flash.
             withAnimation(.spring(response: 0.18, dampingFraction: 0.55)) {
                 flashScale = 1.18
             }
             withAnimation(.spring(response: 0.18, dampingFraction: 0.55).delay(0.12)) {
                 flashScale = 1
             }
-            withAnimation(.spring(response: 0.28, dampingFraction: 0.75)) {
-                displayValue = newVal
-            }
-        }
-        .onAppear {
-            displayValue = value
         }
     }
 }

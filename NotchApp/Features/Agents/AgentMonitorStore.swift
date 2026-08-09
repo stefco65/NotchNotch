@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import Foundation
+import SQLite3
 
 enum AgentActivityState: Equatable, Sendable {
     case working
@@ -98,8 +99,63 @@ struct AgentMonitorPaths: Sendable {
     }
 }
 
+// MARK: - Read-only SQLite access (in-process)
+
+/// Minimal read-only wrapper around the system SQLite3 C API.
+///
+/// The previous implementation spawned `/usr/bin/sqlite3` processes and waited
+/// for them with `waitUntilExit()` before draining stdout, which deadlocks as
+/// soon as the output exceeds the pipe buffer and permanently blocks a thread
+/// of the Swift Concurrency pool. Querying in-process avoids the whole class
+/// of problems and is an order of magnitude cheaper per scan.
+enum SQLiteReadOnly {
+    /// Executes `sql` against the database and returns all result rows as
+    /// arrays of column strings. Returns an empty array on any error
+    /// (missing file, locked database, unknown table, ...).
+    static func query(database: URL, sql: String) -> [[String]] {
+        var handle: OpaquePointer?
+        guard sqlite3_open_v2(database.path, &handle, SQLITE_OPEN_READONLY, nil) == SQLITE_OK,
+              let db = handle else {
+            sqlite3_close_v2(handle)
+            return []
+        }
+        defer { sqlite3_close_v2(db) }
+        // Never wait longer than 200 ms on a live writer's lock.
+        sqlite3_busy_timeout(db, 200)
+
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK,
+              let prepared = statement else {
+            return []
+        }
+        defer { sqlite3_finalize(prepared) }
+
+        var rows: [[String]] = []
+        let columnCount = sqlite3_column_count(prepared)
+        while sqlite3_step(prepared) == SQLITE_ROW {
+            var row: [String] = []
+            row.reserveCapacity(Int(columnCount))
+            for index in 0..<columnCount {
+                if let text = sqlite3_column_text(prepared, index) {
+                    row.append(String(cString: text))
+                } else {
+                    row.append("")
+                }
+            }
+            rows.append(row)
+        }
+        return rows
+    }
+}
+
+// MARK: - AgentStatusScanner
+
 struct AgentStatusScanner: Sendable {
     let paths: AgentMonitorPaths
+
+    /// Conversations not updated within this window are ignored so that the
+    /// component shows the current session, not all-time history.
+    static let recencyWindow: TimeInterval = 3600
 
     init(paths: AgentMonitorPaths = .currentUser()) {
         self.paths = paths
@@ -129,6 +185,8 @@ struct AgentStatusScanner: Sendable {
             )
         }
     }
+
+    // MARK: State mapping (pure, unit-tested)
 
     static func codexState(
         in rolloutData: Data,
@@ -169,6 +227,19 @@ struct AgentStatusScanner: Sendable {
         }
     }
 
+    /// Whether a Cursor conversation should be counted at all.
+    /// Working agents are always shown; finished / stopped ones only while
+    /// they were updated recently, so old history doesn't inflate the counts.
+    static func cursorShouldInclude(
+        state: AgentActivityState,
+        lastUpdatedAt: Date?,
+        now: Date = Date()
+    ) -> Bool {
+        if state == .working { return true }
+        guard let lastUpdatedAt else { return false }
+        return now.timeIntervalSince(lastUpdatedAt) <= recencyWindow
+    }
+
     /// Map a raw Antigravity step status integer to an agent activity state.
     /// Values observed in real databases:
     ///   2 = in-progress / generating
@@ -203,6 +274,8 @@ struct AgentStatusScanner: Sendable {
         return .done
     }
 
+    // MARK: Per-source scans
+
     private func scanCodex() -> AgentCounts {
         let lockURLs = (try? FileManager.default.contentsOfDirectory(
             at: paths.codexThreadLocks,
@@ -219,14 +292,13 @@ struct AgentStatusScanner: Sendable {
         let identifiers = threadIDs
             .map { "'\($0.replacingOccurrences(of: "'", with: "''"))'"}
             .joined(separator: ",")
-        let rows = sqliteQuery(
+        let rows = SQLiteReadOnly.query(
             database: paths.codexStateDatabase,
             sql: "SELECT id, rollout_path FROM threads WHERE id IN (\(identifiers));"
         )
         let rolloutByID = Dictionary(uniqueKeysWithValues: rows.compactMap { row -> (String, String)? in
-            let fields = row.split(separator: "|", maxSplits: 1, omittingEmptySubsequences: false)
-            guard fields.count == 2 else { return nil }
-            return (String(fields[0]), String(fields[1]))
+            guard row.count == 2 else { return nil }
+            return (row[0], row[1])
         })
 
         var counts = AgentCounts()
@@ -250,7 +322,8 @@ struct AgentStatusScanner: Sendable {
 
     private func scanCursor() -> AgentCounts {
         let sql = """
-        SELECT COALESCE(json_extract(k.value, '$.status'), 'none')
+        SELECT COALESCE(json_extract(k.value, '$.status'), 'none'),
+               COALESCE(json_extract(k.value, '$.lastUpdatedAt'), json_extract(k.value, '$.createdAt'), 0)
         FROM cursorDiskKV k
         LEFT JOIN composerHeaders h ON h.composerId = substr(k.key, 14)
         WHERE k.key LIKE 'composerData:%'
@@ -259,8 +332,19 @@ struct AgentStatusScanner: Sendable {
           AND COALESCE(h.isArchived, 0) = 0;
         """
         var counts = AgentCounts()
-        for status in sqliteQuery(database: paths.cursorStateDatabase, sql: sql) {
-            counts.add(Self.cursorState(status: status))
+        let now = Date()
+        for row in SQLiteReadOnly.query(database: paths.cursorStateDatabase, sql: sql) {
+            guard let status = row.first else { continue }
+            let state = Self.cursorState(status: status)
+            // Timestamps are stored as milliseconds since the Unix epoch.
+            let milliseconds = row.count > 1 ? Double(row[1]) : nil
+            let lastUpdatedAt = milliseconds.flatMap { value -> Date? in
+                value > 0 ? Date(timeIntervalSince1970: value / 1000) : nil
+            }
+            guard Self.cursorShouldInclude(state: state, lastUpdatedAt: lastUpdatedAt, now: now) else {
+                continue
+            }
+            counts.add(state)
         }
         return counts
     }
@@ -270,19 +354,12 @@ struct AgentStatusScanner: Sendable {
         // The aux-pane-session field in app_storage.json is often empty
         // (it only contains IDs of currently open side-panel sessions),
         // so we cannot rely on it as the primary source.
-        return scanAntigravityFromConversations()
-    }
-
-    /// Scan all conversation databases in the conversations directory.
-    /// Only includes DBs modified within the last hour to avoid counting
-    /// old finished sessions.
-    private func scanAntigravityFromConversations() -> AgentCounts {
         guard let urls = try? FileManager.default.contentsOfDirectory(
             at: paths.antigravityConversations,
             includingPropertiesForKeys: [.contentModificationDateKey]
         ) else { return AgentCounts() }
 
-        let cutoff = Date().addingTimeInterval(-3600)
+        let cutoff = Date().addingTimeInterval(-Self.recencyWindow)
         var counts = AgentCounts()
 
         for url in urls where url.pathExtension == "db" {
@@ -290,52 +367,23 @@ struct AgentStatusScanner: Sendable {
                 .contentModificationDate) ?? .distantPast
             guard modified > cutoff else { continue }
 
-            // Fetch last step status and whether any step is currently active.
-            // Two queries: last step (to determine final state) + any in-progress.
-            let lastRow = sqliteQuery(
+            // Last step determines the final state; a subquery tells us
+            // whether anything is still in progress. One connection per DB.
+            let row = SQLiteReadOnly.query(
                 database: url,
-                sql: "SELECT status FROM steps ORDER BY idx DESC LIMIT 1;"
+                sql: """
+                SELECT (SELECT status FROM steps ORDER BY idx DESC LIMIT 1),
+                       EXISTS(SELECT 1 FROM steps WHERE status = 2 LIMIT 1);
+                """
             ).first
-            guard let lastStatus = lastRow.flatMap(Int.init) else { continue }
-
-            let hasWorking = !sqliteQuery(
-                database: url,
-                sql: "SELECT 1 FROM steps WHERE status = 2 LIMIT 1;"
-            ).isEmpty
+            guard let row, row.count == 2, let lastStatus = Int(row[0]) else { continue }
 
             counts.add(Self.antigravityConversationState(
                 lastStatus: lastStatus,
-                hasWorkingStep: hasWorking
+                hasWorkingStep: row[1] == "1"
             ))
         }
         return counts
-    }
-
-    private func sqliteQuery(database: URL, sql: String) -> [String] {
-        guard FileManager.default.fileExists(atPath: database.path) else { return [] }
-        let process = Process()
-        let output = Pipe()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
-        // Use WAL mode and a short busy timeout so we don't block on a live write lock.
-        process.arguments = [
-            "-readonly",
-            "-cmd", "PRAGMA busy_timeout=200;",
-            database.path,
-            sql
-        ]
-        process.standardOutput = output
-        process.standardError = Pipe()
-        do {
-            try process.run()
-            process.waitUntilExit()
-        } catch {
-            return []
-        }
-        guard process.terminationStatus == 0 else { return [] }
-        let data = output.fileHandleForReading.readDataToEndOfFile()
-        return String(data: data, encoding: .utf8)?
-            .split(separator: "\n")
-            .map(String.init) ?? []
     }
 
     private func tailData(of url: URL, maximumBytes: UInt64 = 262_144) -> Data? {
@@ -358,18 +406,25 @@ final class AgentMonitorStore: ObservableObject {
     private let scanner: AgentStatusScanner
     private let paths: AgentMonitorPaths
 
-    /// Fallback polling timer – fires every 1 s to catch anything the file
-    /// watchers might miss (e.g. SQLite WAL checkpoints written in-place).
+    /// Fallback polling timer – catches anything the file watchers miss
+    /// (e.g. SQLite WAL checkpoints written in-place).
     private var timerCancellable: AnyCancellable?
 
-    /// kqueue / DispatchSource watchers for individual paths.
-    private var fsWatchers: [DispatchSourceFileSystemObject] = []
+    /// kqueue / DispatchSource watchers, keyed by the watched path so a
+    /// watcher can be re-created after the file is deleted or replaced.
+    private var fsWatchers: [String: DispatchSourceFileSystemObject] = [:]
 
     /// NSWorkspace app-launch / terminate observers.
     private var workspaceCancellables = Set<AnyCancellable>()
 
-    /// Guards against overlapping concurrent scans.
-    private var scanTask: Task<Void, Never>?
+    /// Debounce for rapid bursts of filesystem events.
+    private var debounceTask: Task<Void, Never>?
+
+    /// Single-flight guard: at most one scan runs at any time. Additional
+    /// requests arriving mid-scan set `rescanRequested` and are coalesced
+    /// into exactly one follow-up scan, so work can never pile up.
+    private var isScanning = false
+    private var rescanRequested = false
 
     // MARK: - Init
 
@@ -384,13 +439,19 @@ final class AgentMonitorStore: ObservableObject {
         // 1. Immediate first scan.
         scheduleRefresh(debounceMs: 0)
 
-        // 2. Fallback polling every 1 s (halved from original 2 s).
-        timerCancellable = Timer.publish(every: 1, on: .main, in: .common)
+        // 2. Fallback polling every 2 s; file watchers provide the instant
+        //    reaction, so the timer is only a safety net.
+        timerCancellable = Timer.publish(every: 2, on: .main, in: .common)
             .autoconnect()
-            .sink { [weak self] _ in self?.scheduleRefresh(debounceMs: 0) }
+            .sink { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.ensureFileSystemWatchers()
+                    self?.scheduleRefresh(debounceMs: 0)
+                }
+            }
 
         // 3. kqueue file-system watchers for instant reaction.
-        startFileSystemWatchers()
+        ensureFileSystemWatchers()
 
         // 4. NSWorkspace notifications for app launch / terminate.
         startWorkspaceObservers()
@@ -398,11 +459,11 @@ final class AgentMonitorStore: ObservableObject {
 
     // MARK: - Refresh scheduling
 
-    /// Cancels any in-flight scan and starts a new one after `debounceMs` milliseconds.
-    /// Pass 0 to fire immediately; a small value coalesces rapid filesystem events.
+    /// Starts a scan after `debounceMs` milliseconds, replacing any scan that
+    /// is still waiting in its debounce window. Pass 0 to fire immediately.
     private func scheduleRefresh(debounceMs: Int) {
-        scanTask?.cancel()
-        scanTask = Task { [weak self] in
+        debounceTask?.cancel()
+        debounceTask = Task { [weak self] in
             if debounceMs > 0 {
                 try? await Task.sleep(nanoseconds: UInt64(debounceMs) * 1_000_000)
             }
@@ -412,6 +473,13 @@ final class AgentMonitorStore: ObservableObject {
     }
 
     private func performScan() async {
+        if isScanning {
+            rescanRequested = true
+            return
+        }
+        isScanning = true
+        defer { isScanning = false }
+
         let runningBundleIdentifiers = Set(
             NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier)
         )
@@ -424,47 +492,53 @@ final class AgentMonitorStore: ObservableObject {
         if newSummaries != summaries {
             summaries = newSummaries
         }
+
+        if rescanRequested {
+            rescanRequested = false
+            scheduleRefresh(debounceMs: 100)
+        }
     }
 
     // MARK: - File-system watchers (kqueue via DispatchSource)
 
-    private func startFileSystemWatchers() {
-        // Cancel existing watchers first.
-        fsWatchers.forEach { $0.cancel() }
-        fsWatchers.removeAll()
-
-        let targets = paths.watchTargets
-        for url in targets {
-            guard let source = makeFileWatcher(for: url) else { continue }
-            fsWatchers.append(source)
+    /// Creates watchers for any target that isn't being watched yet. Called
+    /// on start and from the polling timer, so watchers lost to file deletion
+    /// or paths that didn't exist at launch are picked up automatically.
+    private func ensureFileSystemWatchers() {
+        for url in paths.watchTargets where fsWatchers[url.path] == nil {
+            watchPath(url.path)
         }
     }
 
-    private func makeFileWatcher(for url: URL) -> DispatchSourceFileSystemObject? {
+    private func watchPath(_ path: String) {
         // Open with O_EVTONLY so we can watch without preventing deletion.
-        let fd = open(url.path, O_EVTONLY)
-        guard fd >= 0 else { return nil }
+        let fd = open(path, O_EVTONLY)
+        guard fd >= 0 else { return }
 
         let source = DispatchSource.makeFileSystemObjectSource(
             fileDescriptor: fd,
             eventMask: [.write, .rename, .delete, .extend, .attrib, .link],
-            queue: .global(qos: .utility)
+            queue: .main
         )
 
-        source.setEventHandler { [weak self] in
-            // We're on .global(qos: .utility). Jump to main actor via GCD
-            // and use assumeIsolated so Swift 6 recognises the @MainActor
-            // isolation without creating a new Task (avoids actor-hop latency).
-            DispatchQueue.main.async {
-                MainActor.assumeIsolated {
-                    self?.scheduleRefresh(debounceMs: 150)
+        source.setEventHandler { [weak self, weak source] in
+            let flags = source?.data ?? []
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                if flags.contains(.delete) || flags.contains(.rename) {
+                    // The watched inode is gone (file replaced atomically or
+                    // removed). Drop the watcher; the polling timer re-creates
+                    // it once the path exists again.
+                    self.fsWatchers[path]?.cancel()
+                    self.fsWatchers[path] = nil
                 }
+                self.scheduleRefresh(debounceMs: 150)
             }
         }
 
         source.setCancelHandler { close(fd) }
         source.resume()
-        return source
+        fsWatchers[path] = source
     }
 
     // MARK: - NSWorkspace observers
