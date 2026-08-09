@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleDisplayName</key>
+    <string>NotchNook</string>
+    <key>CFBundleExecutable</key>
+    <string>NotchNook</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.notchnook.app</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>NotchNook</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>14.6</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>NotchNook odczytuje aktualnie odtwarzany utwór i steruje odtwarzaniem w Spotify.</string>
+    <key>NSCalendarsFullAccessUsageDescription</key>
+    <string>NotchNook wyświetla wydarzenia z Kalendarza w komponencie notcha.</string>
+</dict>
+</plist>
