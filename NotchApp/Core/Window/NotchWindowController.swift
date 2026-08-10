@@ -84,24 +84,31 @@ final class NotchWindowController: NSWindowController {
         )
         let collapsedRadii = Self.surfaceRadii(for: .collapsed)
         let initialVisual = Self.frame(for: .collapsed, display: display)
+        let initialChrome = Self.windowFrame(
+            for: .collapsed,
+            display: display
+        )
+        let initialOffsetX = Self.contentOffsetX(
+            visual: initialVisual,
+            contentWidth: initialVisual.width,
+            chrome: initialChrome
+        )
         hostingView.setSurfaceAppearance(
             bottomRadius: collapsedRadii.bottom,
             shoulderRadius: collapsedRadii.shoulder,
             contentWidth: initialVisual.width,
-            contentHeight: initialVisual.height
+            contentHeight: initialVisual.height,
+            contentOffsetX: initialOffsetX
         )
         panel.contentView = hostingView
 
         super.init(window: panel)
         surfaceHostView = hostingView
-        let initialChrome = Self.windowFrame(
-            for: .collapsed,
-            display: display
-        )
         let initialMetrics = PresentationMetrics(
             frame: initialChrome,
             contentWidth: initialVisual.width,
             contentHeight: initialVisual.height,
+            contentOffsetX: initialOffsetX,
             bottomRadius: collapsedRadii.bottom,
             shoulderRadius: collapsedRadii.shoulder,
             horizontalScale: 1,
@@ -121,6 +128,7 @@ final class NotchWindowController: NSWindowController {
         model.glowOpacity = 0
         model.contentWidth = initialVisual.width
         model.contentHeight = initialVisual.height
+        model.contentOffsetX = initialOffsetX
         model.onToggle = { [weak self] in self?.toggle() }
         model.onOpenSettings = { [weak self] in self?.onOpenSettings?() }
         spotifyPlaybackCancellable = spotifyMusicStore.$hasActiveTrack
@@ -529,6 +537,9 @@ final class NotchWindowController: NSWindowController {
         if abs(model.contentHeight - metrics.contentHeight) > 0.5 {
             model.contentHeight = metrics.contentHeight
         }
+        if abs(model.contentOffsetX - metrics.contentOffsetX) > 0.5 {
+            model.contentOffsetX = metrics.contentOffsetX
+        }
     }
 
     private func presentationMetrics(
@@ -545,21 +556,28 @@ final class NotchWindowController: NSWindowController {
             showsNowPlaying: showsNowPlaying,
             showsLiveActivity: showsLiveActivity
         )
+        let chrome = Self.windowFrame(
+            for: state,
+            display: display,
+            expandedWidth: settingsStore.expandedWidth,
+            showsNowPlaying: showsNowPlaying,
+            showsLiveActivity: showsLiveActivity
+        )
         let scale = Self.surfaceHorizontalScale(
             for: state,
             showsNowPlaying: showsNowPlaying,
             showsLiveActivity: showsLiveActivity
         )
+        let drawnWidth = visual.width * scale
         return PresentationMetrics(
-            frame: Self.windowFrame(
-                for: state,
-                display: display,
-                expandedWidth: settingsStore.expandedWidth,
-                showsNowPlaying: showsNowPlaying,
-                showsLiveActivity: showsLiveActivity
-            ),
-            contentWidth: visual.width * scale,
+            frame: chrome,
+            contentWidth: drawnWidth,
             contentHeight: visual.height,
+            contentOffsetX: Self.contentOffsetX(
+                visual: visual,
+                contentWidth: drawnWidth,
+                chrome: chrome
+            ),
             bottomRadius: radii.bottom,
             shoulderRadius: radii.shoulder,
             horizontalScale: scale,
@@ -587,7 +605,8 @@ final class NotchWindowController: NSWindowController {
             bottomRadius: metrics.bottomRadius,
             shoulderRadius: metrics.shoulderRadius,
             contentWidth: metrics.contentWidth,
-            contentHeight: metrics.contentHeight
+            contentHeight: metrics.contentHeight,
+            contentOffsetX: metrics.contentOffsetX
         )
         // SwiftUI metrics are synced once per transition in commitPresentation.
         // Do not publish per-tick sizes/radii here.
@@ -598,6 +617,18 @@ final class NotchWindowController: NSWindowController {
             && abs(lhs.origin.y - rhs.origin.y) < 0.05
             && abs(lhs.size.width - rhs.size.width) < 0.05
             && abs(lhs.size.height - rhs.size.height) < 0.05
+    }
+
+    /// Leading inset of the drawn body inside the chrome window so it shares
+    /// midX with the screen-space visual rect (physical / virtual notch).
+    static func contentOffsetX(
+        visual: CGRect,
+        contentWidth: CGFloat,
+        chrome: CGRect
+    ) -> CGFloat {
+        let drawnWidth = max(contentWidth, 1)
+        let drawnMinX = visual.midX - drawnWidth / 2
+        return drawnMinX - chrome.minX
     }
 
     /// Window chrome for a state. Always uses the expanded rect so compact
@@ -745,6 +776,7 @@ private final class OverlayPresentationModel: ObservableObject {
     /// Drawn compact silhouette size inside the always-expanded window chrome.
     @Published var contentWidth: CGFloat = 120
     @Published var contentHeight: CGFloat = 32
+    @Published var contentOffsetX: CGFloat = 0
     var onToggle: (() -> Void)?
     var onOpenSettings: (() -> Void)?
 }
@@ -795,7 +827,7 @@ private struct OverlaySurfaceView: View {
     private func compactChrome(shape: NotchSurfaceShape) -> some View {
         // Layout snaps to the transition target; CALayer mask morphs the
         // visible silhouette. Avoid clipShape/size animation driven each tick.
-        ZStack(alignment: .top) {
+        let body = ZStack(alignment: .top) {
             surfaceContent
 
             if settingsStore.rainbowGlowEnabled, model.glowOpacity > 0.01 {
@@ -818,6 +850,13 @@ private struct OverlaySurfaceView: View {
             },
             including: usesMusicTapZones ? .subviews : .all
         )
+
+        return HStack(spacing: 0) {
+            Spacer()
+                .frame(width: max(model.contentOffsetX, 0))
+            body
+            Spacer(minLength: 0)
+        }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 

@@ -7,9 +7,12 @@ struct PresentationMetrics: Equatable {
     /// NSWindow frame. For compact states this is a stable chrome rect so
     /// collapsed ↔ hovered ↔ musicPreview do not resize the window.
     var frame: CGRect
-    /// Drawn notch size inside `frame` (top-centered). Animates on hover.
+    /// Drawn notch size inside `frame`. Animates on hover.
     var contentWidth: CGFloat
     var contentHeight: CGFloat
+    /// Leading inset of the drawn body inside `frame`, so the silhouette
+    /// lines up with the screen-space visual rect (hardware notch midX).
+    var contentOffsetX: CGFloat
     var bottomRadius: CGFloat
     var shoulderRadius: CGFloat
     var horizontalScale: CGFloat
@@ -120,6 +123,7 @@ final class NotchGeometryAnimator {
             frame: to.frame,
             contentWidth: lerp(from.contentWidth, to.contentWidth, progress),
             contentHeight: lerp(from.contentHeight, to.contentHeight, progress),
+            contentOffsetX: lerp(from.contentOffsetX, to.contentOffsetX, progress),
             bottomRadius: lerp(from.bottomRadius, to.bottomRadius, progress),
             shoulderRadius: lerp(from.shoulderRadius, to.shoulderRadius, progress),
             horizontalScale: lerp(from.horizontalScale, to.horizontalScale, progress),

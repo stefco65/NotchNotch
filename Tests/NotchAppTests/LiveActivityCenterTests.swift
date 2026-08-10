@@ -147,7 +147,7 @@ final class LiveActivityCenterTests: XCTestCase {
         )
     }
 
-    func testDIClipsCenteredCapsuleToPhysicalRight() {
+    func testDIKeepsCenteredCapsuleAndDetachesBubble() {
         let display = DisplayDescriptor(
             id: 1,
             frame: CGRect(x: 0, y: 0, width: 1000, height: 1000),
@@ -180,9 +180,8 @@ final class LiveActivityCenterTests: XCTestCase {
             showsNowPlaying: true,
             showsLiveActivity: true
         )
-        XCTAssertEqual(musicDI.minX, playingNoDI.minX)
-        XCTAssertEqual(musicDI.maxX, physical.maxX)
-        XCTAssertEqual(musicDI, CGRect(x: 350, y: 974, width: 250, height: 26))
+        XCTAssertEqual(musicDI, playingNoDI)
+        XCTAssertEqual(musicDI.midX, physical.midX)
 
         let musicHoverDI = DynamicIslandLayout.compactEnvelope(
             for: .hovered,
@@ -191,7 +190,7 @@ final class LiveActivityCenterTests: XCTestCase {
             showsLiveActivity: true
         )
         XCTAssertEqual(musicHoverDI.minX, musicDI.minX)
-        XCTAssertEqual(musicHoverDI.maxX, physical.maxX)
+        XCTAssertEqual(musicHoverDI.maxX, musicDI.maxX)
         XCTAssertEqual(musicHoverDI.width, musicDI.width)
         XCTAssertEqual(musicHoverDI.height, musicDI.height + 20)
 
@@ -202,7 +201,7 @@ final class LiveActivityCenterTests: XCTestCase {
             showsLiveActivity: true
         )
         XCTAssertEqual(musicPreviewDI.minX, musicDI.minX)
-        XCTAssertEqual(musicPreviewDI.maxX, physical.maxX)
+        XCTAssertEqual(musicPreviewDI.maxX, musicDI.maxX)
         XCTAssertEqual(musicPreviewDI.width, musicDI.width)
         XCTAssertEqual(musicPreviewDI.height, musicDI.height + 64)
 
@@ -212,15 +211,27 @@ final class LiveActivityCenterTests: XCTestCase {
             showsNowPlaying: false,
             showsLiveActivity: true
         )
-        XCTAssertEqual(idleHoverDI.minX, physical.minX)
-        XCTAssertEqual(idleHoverDI.maxX, physical.maxX)
+        XCTAssertEqual(idleHoverDI.midX, physical.midX)
+        XCTAssertEqual(
+            idleHoverDI.width,
+            physical.width + DynamicIslandLayout.idleHoverExtraWidth
+        )
         XCTAssertEqual(idleHoverDI.height, physical.height + 20)
 
-        let musicBubble = DynamicIslandLayout.bubbleWindowFrame(adjacentTo: musicDI)
-        let idleBubble = DynamicIslandLayout.bubbleWindowFrame(adjacentTo: physical)
-        XCTAssertEqual(musicBubble.minX, idleBubble.minX)
+        let musicBubble = DynamicIslandLayout.bubbleWindowFrame(
+            adjacentTo: musicDI,
+            restingHeight: physical.height
+        )
+        let idleBubble = DynamicIslandLayout.bubbleWindowFrame(
+            adjacentTo: physical,
+            restingHeight: physical.height
+        )
+        XCTAssertEqual(musicBubble.minX, musicDI.maxX - DynamicIslandLayout.attachOverlap)
+        XCTAssertEqual(idleBubble.minX, physical.maxX - DynamicIslandLayout.attachOverlap)
+        XCTAssertGreaterThan(musicBubble.minX, idleBubble.minX)
 
         XCTAssertEqual(DynamicIslandLayout.bubbleDiameter(anchorHeight: 37), 29)
         XCTAssertEqual(DynamicIslandLayout.bubbleDiameter(anchorHeight: 12), 22)
+        XCTAssertEqual(DynamicIslandLayout.bubbleDiameter(anchorHeight: 38), 30)
     }
 }

@@ -602,11 +602,13 @@ Geometrię napędza jeden `NotchGeometryAnimator` (`PresentationMetrics`: frame,
 | Stan | Szerokość bazowa | Wysokość |
 |---|---|---|
 | `collapsed` | `max(anchor.width, 120) + (Spotify ? 100 : 0)` | `max(anchor.height, 12)` |
-| `hovered` | `max(anchor.width, 120) + (Spotify ? 100 : 40)` | baza + 20 |
-| `musicPreview` | `max(anchor.width, 120) + (Spotify ? 100 : 40)` | baza + 64 |
+| `hovered` | `max(anchor.width, 120) + (Spotify ? 100 : 80)` | baza + 20 |
+| `musicPreview` | `max(anchor.width, 120) + (Spotify ? 100 : 80)` | baza + 64 |
 | `expanded` | ustawienie 520–1800, ograniczone do ekranu - 48 | 204 |
 
 Frame docelowy jest całkowany przez `.integral`; klatki pośrednie animacji mogą być połówkowe.
+
+Live Activity **nie** ucina kapsuły — `compactEnvelope` jest tą samą wycentrowaną geometrią co bez DI, a bubble dokleja się do `maxX` z overlapem.
 
 ## 17. Najważniejsze zależności i przepływy danych
 

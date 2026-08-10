@@ -4,11 +4,14 @@ import Foundation
 /// Shared geometry for the Dynamic Island split.
 ///
 /// The idle notch always matches `display.anchor.rect` (the real hardware /
-/// virtual cutout). Music and hover expand around that anchor's midX. With DI
-/// the right edge stays on the physical notch's maxX; extra width stays on the left.
+/// virtual cutout). Music and hover expand symmetrically around that anchor's
+/// midX. Live Activity does **not** clip the notch — the bubble detaches to
+/// the right of the capsule's maxX (with a small attach overlap).
 enum DynamicIslandLayout {
     nonisolated static let compactExtraWidth: CGFloat = 100
-    nonisolated static let idleHoverExtraWidth: CGFloat = 40
+    /// Idle hover growth on a ~220pt hardware notch (~+36%) so the slide-out
+    /// reads as a real expansion, not a thin downward drip.
+    nonisolated static let idleHoverExtraWidth: CGFloat = 80
     nonisolated static let splitGap: CGFloat = 2
     nonisolated static let attachOverlap: CGFloat = 10
 
@@ -93,42 +96,19 @@ enum DynamicIslandLayout {
         ).integral
     }
 
-    /// Compact frame. Without DI: centered capsule on the physical notch.
-    /// With DI: stable left (music / physical), right snapped to physical maxX.
+    /// Compact visual frame. Live Activity never clips this rect — the bubble
+    /// hangs off `maxX` so the black body stays centered on the hardware notch.
     nonisolated static func compactEnvelope(
         for state: NotchWindowController.SurfaceState,
         display: DisplayDescriptor,
         showsNowPlaying: Bool,
         showsLiveActivity: Bool
     ) -> CGRect {
-        let height = compactHeight(for: state, display: display)
-        let y = display.frame.maxY - height
-
-        guard showsLiveActivity else {
-            return centeredCapsule(
-                for: state,
-                display: display,
-                showsNowPlaying: showsNowPlaying
-            )
-        }
-
-        let physical = physicalNotchFrame(display: display)
-        let left: CGFloat
-        if showsNowPlaying {
-            left = centeredCapsule(
-                for: .collapsed,
-                display: display,
-                showsNowPlaying: true
-            ).minX
-        } else {
-            left = physical.minX
-        }
-
-        return snapRightEdge(
-            left: left,
-            right: physical.maxX,
-            y: y,
-            height: height
+        _ = showsLiveActivity
+        return centeredCapsule(
+            for: state,
+            display: display,
+            showsNowPlaying: showsNowPlaying
         )
     }
 
@@ -165,8 +145,14 @@ enum DynamicIslandLayout {
         return envelope
     }
 
-    nonisolated static func bubbleWindowFrame(adjacentTo notchFrame: CGRect) -> CGRect {
-        let diameter = bubbleDiameter(anchorHeight: notchFrame.height)
+    /// Bubble window parked against the notch's right shoulder.
+    /// Diameter is locked to the resting (physical) height so hover growth
+    /// only recenters the pill — it must not widen the cut mid-animation.
+    nonisolated static func bubbleWindowFrame(
+        adjacentTo notchFrame: CGRect,
+        restingHeight: CGFloat
+    ) -> CGRect {
+        let diameter = bubbleDiameter(anchorHeight: restingHeight)
         let width = attachOverlap + splitGap + diameter + 48
         return CGRect(
             x: notchFrame.maxX - attachOverlap,
@@ -176,18 +162,21 @@ enum DynamicIslandLayout {
         ).integral
     }
 
+    nonisolated static func bubbleWindowFrame(adjacentTo notchFrame: CGRect) -> CGRect {
+        bubbleWindowFrame(
+            adjacentTo: notchFrame,
+            restingHeight: max(notchFrame.height, 12)
+        )
+    }
+
     nonisolated static func bubbleWindowFrame(
         adjacentTo notchFrame: CGRect,
         display: DisplayDescriptor
     ) -> CGRect {
-        let diameter = bubbleSlotWidth(display: display)
-        let width = attachOverlap + splitGap + diameter + 48
-        return CGRect(
-            x: notchFrame.maxX - attachOverlap,
-            y: notchFrame.maxY - max(notchFrame.height, 48),
-            width: width,
-            height: max(notchFrame.height, 48)
-        ).integral
+        bubbleWindowFrame(
+            adjacentTo: notchFrame,
+            restingHeight: max(display.anchor.rect.height, 12)
+        )
     }
 
     nonisolated static func bubbleWindowFrame(envelope: CGRect) -> CGRect {
