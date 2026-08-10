@@ -256,6 +256,14 @@ final class OverlayGeometryTests: XCTestCase {
                 pointerLocation: CGPoint(x: 40, y: 400)
             )
         )
+        XCTAssertFalse(
+            NotchWindowController.shouldCollapse(
+                state: .expanded,
+                suppressOutsideCollapse: true,
+                panelFrame: frame,
+                pointerLocation: CGPoint(x: 40, y: 400)
+            )
+        )
     }
 
     private func fixture(anchorRect: CGRect) -> DisplayDescriptor {

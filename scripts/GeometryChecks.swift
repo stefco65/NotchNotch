@@ -90,6 +90,40 @@ enum GeometryChecks {
         precondition(artworkHoverFrame.contains(CGPoint(x: 377, y: 982)))
         precondition(!artworkHoverFrame.contains(CGPoint(x: 500, y: 982)))
 
+        // Live-activity split: the right pill cuts out of the music envelope,
+        // leaving an asymmetric main notch whose left edge stays put.
+        let splitEnvelope = DynamicIslandLayout.compactEnvelope(
+            for: .collapsed,
+            display: display,
+            showsNowPlaying: true,
+            showsLiveActivity: true
+        )
+        precondition(splitEnvelope == playingCollapsed)
+        let splitMain = NotchWindowController.frame(
+            for: .collapsed,
+            display: display,
+            showsNowPlaying: true,
+            showsLiveActivity: true
+        )
+        let bubbleSlot = DynamicIslandLayout.bubbleSlotWidth(surfaceHeight: splitEnvelope.height)
+        precondition(splitMain.minX == splitEnvelope.minX)
+        precondition(splitMain.maxY == splitEnvelope.maxY)
+        precondition(
+            splitMain.width
+                == splitEnvelope.width - DynamicIslandLayout.splitGap - bubbleSlot
+        )
+        precondition(splitMain.midX < display.frame.midX)
+        precondition(
+            NotchWindowController.surfaceHorizontalScale(
+                for: .collapsed,
+                showsNowPlaying: true,
+                showsLiveActivity: true
+            ) == 1
+        )
+        let bubbleWindow = DynamicIslandLayout.bubbleWindowFrame(envelope: splitEnvelope)
+        precondition(bubbleWindow.maxX >= splitEnvelope.maxX - 1)
+        precondition(bubbleWindow.maxY == splitEnvelope.maxY)
+
         precondition(
             MarqueeMetrics.offset(
                 elapsed: 0.9,
@@ -160,6 +194,14 @@ enum GeometryChecks {
             !NotchWindowController.shouldCollapse(
                 state: .expanded,
                 isTrayMode: true,
+                panelFrame: expanded,
+                pointerLocation: CGPoint(x: 30, y: 300)
+            )
+        )
+        precondition(
+            !NotchWindowController.shouldCollapse(
+                state: .expanded,
+                suppressOutsideCollapse: true,
                 panelFrame: expanded,
                 pointerLocation: CGPoint(x: 30, y: 300)
             )
@@ -267,8 +309,17 @@ enum GeometryChecks {
         precondition(AgentStatusScanner.cursorState(status: "blocked") == .stopped)
         precondition(AgentStatusScanner.cursorState(status: "none") == .done)
         precondition(AgentStatusScanner.antigravityState(status: 1) == .working)
-        precondition(AgentStatusScanner.antigravityState(status: 7) == .stopped)
+        precondition(AgentStatusScanner.antigravityState(status: 2) == .working)
         precondition(AgentStatusScanner.antigravityState(status: 3) == .done)
+        precondition(AgentStatusScanner.antigravityState(status: 4) == .stopped)
+        precondition(AgentStatusScanner.antigravityState(status: 7) == .stopped)
+        precondition(
+            AgentStatusScanner.antigravityConversationState(lastStatus: 3, hasWorkingStep: true)
+                == .working
+        )
+        precondition(
+            AgentStatusScanner.codexEventState(type: "exec_approval_request") == .stopped
+        )
 
         let taskStore = TaskStore(
             defaults: defaults,

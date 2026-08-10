@@ -26,10 +26,62 @@ final class AgentStatusScannerTests: XCTestCase {
         )
     }
 
+    func testCodexApprovalAndWaitingEventsAreStopped() {
+        XCTAssertEqual(
+            AgentStatusScanner.codexEventState(type: "exec_approval_request"),
+            .stopped
+        )
+        XCTAssertEqual(
+            AgentStatusScanner.codexEventState(type: "request_user_input"),
+            .stopped
+        )
+        XCTAssertEqual(
+            AgentStatusScanner.codexEventState(type: "turn_started"),
+            .working
+        )
+
+        let waiting = Data(
+            (#"{"payload":{"type":"task_started"}}"# + "\n"
+             + #"{"payload":{"type":"exec_approval_request"}}"#).utf8
+        )
+        XCTAssertEqual(AgentStatusScanner.codexState(in: waiting), .stopped)
+    }
+
     func testCursorStatusMapping() {
         XCTAssertEqual(AgentStatusScanner.cursorState(status: "generating"), .working)
         XCTAssertEqual(AgentStatusScanner.cursorState(status: "blocked"), .stopped)
+        XCTAssertEqual(AgentStatusScanner.cursorState(status: "aborted"), .stopped)
+        XCTAssertEqual(AgentStatusScanner.cursorState(status: "completed"), .done)
         XCTAssertEqual(AgentStatusScanner.cursorState(status: "none"), .done)
+    }
+
+    func testCursorGeneratingBubbleIdsCountAsWorking() {
+        // Cursor keeps status as "aborted" in some races while bubbles are
+        // still generating — bubble count must win so working stays blue.
+        XCTAssertEqual(
+            AgentStatusScanner.cursorState(
+                .init(status: "aborted", generatingBubbleCount: 2)
+            ),
+            .working
+        )
+        XCTAssertEqual(
+            AgentStatusScanner.cursorState(
+                .init(status: "none", generatingBubbleCount: 1)
+            ),
+            .working
+        )
+        XCTAssertEqual(
+            AgentStatusScanner.cursorState(
+                .init(status: "completed", isContinuationInProgress: true)
+            ),
+            .working
+        )
+        XCTAssertEqual(
+            AgentStatusScanner.cursorState(
+                .init(status: "aborted", generatingBubbleCount: 0)
+            ),
+            .stopped
+        )
     }
 
     func testCursorRecencyFilter() {
@@ -58,25 +110,38 @@ final class AgentStatusScannerTests: XCTestCase {
 
     func testAntigravityStatusMapping() {
         XCTAssertEqual(AgentStatusScanner.antigravityState(status: 1), .working)
-        XCTAssertEqual(AgentStatusScanner.antigravityState(status: 7), .stopped)
+        XCTAssertEqual(AgentStatusScanner.antigravityState(status: 2), .working)
         XCTAssertEqual(AgentStatusScanner.antigravityState(status: 3), .done)
+        XCTAssertEqual(AgentStatusScanner.antigravityState(status: 4), .stopped) // WaitingForUser
+        XCTAssertEqual(AgentStatusScanner.antigravityState(status: 5), .stopped) // Error
+        XCTAssertEqual(AgentStatusScanner.antigravityState(status: 7), .stopped)
     }
 
     func testAntigravityConversationState() {
+        // In-progress steps win over a stale terminal last status.
         XCTAssertEqual(
             AgentStatusScanner.antigravityConversationState(lastStatus: 3, hasWorkingStep: true),
-            .done
+            .working
         )
         XCTAssertEqual(
             AgentStatusScanner.antigravityConversationState(lastStatus: 7, hasWorkingStep: false),
             .stopped
         )
         XCTAssertEqual(
+            AgentStatusScanner.antigravityConversationState(lastStatus: 4, hasWorkingStep: false),
+            .stopped
+        )
+        XCTAssertEqual(
             AgentStatusScanner.antigravityConversationState(lastStatus: 2, hasWorkingStep: true),
             .working
         )
+        // Last step itself is Active even if the EXISTS subquery missed it.
         XCTAssertEqual(
             AgentStatusScanner.antigravityConversationState(lastStatus: 2, hasWorkingStep: false),
+            .working
+        )
+        XCTAssertEqual(
+            AgentStatusScanner.antigravityConversationState(lastStatus: 3, hasWorkingStep: false),
             .done
         )
     }

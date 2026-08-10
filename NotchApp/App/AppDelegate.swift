@@ -9,6 +9,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let taskStore = TaskStore()
     let calendarStore = CalendarStore()
     let agentMonitorStore = AgentMonitorStore()
+    lazy var liveActivityCenter = LiveActivityCenter(
+        agentMonitorStore: agentMonitorStore,
+        taskStore: taskStore
+    )
 
     private var statusItem: NSStatusItem?
     private var displayInfoMenuItem: NSMenuItem?
@@ -117,10 +121,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             spotifyMusicStore: spotifyMusicStore,
             taskStore: taskStore,
             calendarStore: calendarStore,
-            agentMonitorStore: agentMonitorStore
+            agentMonitorStore: agentMonitorStore,
+            liveActivityCenter: liveActivityCenter
         )
         controller.onOpenSettings = { [weak self] in
             self?.showSettingsWindow()
+        }
+        controller.isOutsideCollapseSuppressed = { [weak self] in
+            self?.isSettingsWindowVisible == true
         }
 
         windowControllers[descriptor.id] = controller
@@ -221,10 +229,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         showSettingsWindow()
     }
 
+    private var isSettingsWindowVisible: Bool {
+        settingsWindowController?.window?.isVisible == true
+    }
+
     private func showSettingsWindow() {
         if settingsWindowController == nil {
             settingsWindowController = SettingsWindowController(store: settingsStore)
         }
+        // Keep the notch expanded while editing so geometry / component
+        // changes are visible immediately.
+        windowControllers.values.forEach { $0.showExpanded() }
         settingsWindowController?.present()
     }
 
