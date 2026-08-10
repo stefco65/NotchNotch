@@ -171,6 +171,12 @@ final class SpotifyMusicStore: ObservableObject {
                 clearActiveSource()
             }
             logger.error("Spotify Apple Event failed, code=\(result.errorCode ?? 0, privacy: .public)")
+            AppErrorLog.record(
+                severity: .error,
+                category: "music",
+                message: "Spotify Apple Event failed",
+                details: "errorCode: \(result.errorCode.map(String.init) ?? "nil")"
+            )
         }
     }
 

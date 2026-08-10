@@ -2,9 +2,14 @@ import AppKit
 import QuartzCore
 
 /// Snapshot of every visual property that must move together during a notch
-/// transition — window frame, silhouette radii, music scale and glow opacity.
+/// transition — window frame, drawn content size, silhouette radii and glow.
 struct PresentationMetrics: Equatable {
+    /// NSWindow frame. For compact states this is a stable chrome rect so
+    /// collapsed ↔ hovered ↔ musicPreview do not resize the window.
     var frame: CGRect
+    /// Drawn notch size inside `frame` (top-centered). Animates on hover.
+    var contentWidth: CGFloat
+    var contentHeight: CGFloat
     var bottomRadius: CGFloat
     var shoulderRadius: CGFloat
     var horizontalScale: CGFloat
@@ -13,6 +18,10 @@ struct PresentationMetrics: Equatable {
 
 /// Single timeline for notch geometry. Supersedes any in-flight run from the
 /// currently presented values so transitions never stack on top of each other.
+///
+/// Window `frame` is applied in one shot at commit time. Interpolating
+/// `NSWindow.setFrame` every tick forces SwiftUI hosting layout into AppKit's
+/// fatal "too many Update Constraints in Window" trap on macOS 26.
 @MainActor
 final class NotchGeometryAnimator {
     private(set) var presented: PresentationMetrics
@@ -23,6 +32,8 @@ final class NotchGeometryAnimator {
     private var duration: TimeInterval = 0
 
     var onApply: ((PresentationMetrics) -> Void)?
+    /// Fires once when a commit reaches its target (including duration == 0).
+    var onComplete: ((PresentationMetrics) -> Void)?
 
     init(initial: PresentationMetrics) {
         presented = initial
@@ -36,16 +47,25 @@ final class NotchGeometryAnimator {
         if duration <= 0 || target == presented {
             presented = target
             onApply?(target)
+            onComplete?(target)
             return
         }
 
-        fromMetrics = presented
+        // Snap the window rect immediately, then animate only the silhouette.
+        var from = presented
+        if !Self.framesEqual(from.frame, target.frame) {
+            from.frame = target.frame
+            presented = from
+            onApply?(from)
+        }
+
+        fromMetrics = from
         toMetrics = target
         startTime = CACurrentMediaTime()
         self.duration = duration
 
         let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
-            Task { @MainActor in
+            MainActor.assumeIsolated {
                 self?.tick()
             }
         }
@@ -79,6 +99,7 @@ final class NotchGeometryAnimator {
             cancelTimer()
             presented = toMetrics
             onApply?(toMetrics)
+            onComplete?(toMetrics)
             self.fromMetrics = nil
             self.toMetrics = nil
         }
@@ -96,12 +117,9 @@ final class NotchGeometryAnimator {
         progress: CGFloat
     ) -> PresentationMetrics {
         PresentationMetrics(
-            frame: CGRect(
-                x: lerp(from.frame.origin.x, to.frame.origin.x, progress),
-                y: lerp(from.frame.origin.y, to.frame.origin.y, progress),
-                width: lerp(from.frame.width, to.frame.width, progress),
-                height: lerp(from.frame.height, to.frame.height, progress)
-            ),
+            frame: to.frame,
+            contentWidth: lerp(from.contentWidth, to.contentWidth, progress),
+            contentHeight: lerp(from.contentHeight, to.contentHeight, progress),
             bottomRadius: lerp(from.bottomRadius, to.bottomRadius, progress),
             shoulderRadius: lerp(from.shoulderRadius, to.shoulderRadius, progress),
             horizontalScale: lerp(from.horizontalScale, to.horizontalScale, progress),
@@ -111,5 +129,12 @@ final class NotchGeometryAnimator {
 
     nonisolated private static func lerp(_ a: CGFloat, _ b: CGFloat, _ t: CGFloat) -> CGFloat {
         a + (b - a) * t
+    }
+
+    nonisolated private static func framesEqual(_ lhs: CGRect, _ rhs: CGRect) -> Bool {
+        abs(lhs.origin.x - rhs.origin.x) < 0.05
+            && abs(lhs.origin.y - rhs.origin.y) < 0.05
+            && abs(lhs.size.width - rhs.size.width) < 0.05
+            && abs(lhs.size.height - rhs.size.height) < 0.05
     }
 }

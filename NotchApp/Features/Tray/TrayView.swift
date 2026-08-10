@@ -57,7 +57,7 @@ struct TrayView: View {
                 Label("\(store.items.count) w Tray", systemImage: "tray.full.fill")
                     .font(.system(size: 11, weight: .semibold))
                 Spacer()
-                Text(isDropTargeted ? "Upuść, aby dodać" : "Możesz upuścić kolejne pliki")
+                Text(isDropTargeted ? "Upuść, aby dodać" : "Przeciągnij na zewnątrz lub upuść kolejne")
                     .font(.system(size: 10))
                     .foregroundStyle(isDropTargeted ? .purple : .white.opacity(0.45))
             }
@@ -89,18 +89,28 @@ struct TrayView: View {
 
     private func trayItemCard(_ item: TrayItem) -> some View {
         HStack(spacing: 8) {
-            Image(nsImage: NSWorkspace.shared.icon(forFile: item.storedURL.path))
-                .resizable()
-                .scaledToFit()
-                .frame(width: 28, height: 28)
+            HStack(spacing: 8) {
+                Image(nsImage: NSWorkspace.shared.icon(forFile: item.storedURL.path))
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 28, height: 28)
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text(item.displayName)
-                    .font(.system(size: 11, weight: .medium))
-                    .lineLimit(1)
-                Text(item.isDirectory ? "Folder" : formattedSize(item.fileSize))
-                    .font(.system(size: 9))
-                    .foregroundStyle(.white.opacity(0.42))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(item.displayName)
+                        .font(.system(size: 11, weight: .medium))
+                        .lineLimit(1)
+                    Text(item.isDirectory ? "Folder" : formattedSize(item.fileSize))
+                        .font(.system(size: 9))
+                        .foregroundStyle(.white.opacity(0.42))
+                }
+                Spacer(minLength: 0)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            // Native AppKit drag source sits above the labels so the
+            // nonactivating notch panel can actually begin a file drag.
+            .overlay {
+                TrayItemDragHandle(url: item.storedURL)
             }
 
             Button {
@@ -116,6 +126,20 @@ struct TrayView: View {
         .padding(.vertical, 8)
         .frame(width: 170)
         .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
+        .contextMenu {
+            Button("Kopiuj") {
+                copyToPasteboard(item)
+            }
+            Button("Pokaż w Finderze") {
+                NSWorkspace.shared.activateFileViewerSelecting([item.storedURL])
+            }
+        }
+        .accessibilityHint("Przeciągnij, aby skopiować poza Tray")
+    }
+
+    private func copyToPasteboard(_ item: TrayItem) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.writeObjects([item.storedURL as NSURL])
     }
 
     private func formattedSize(_ bytes: Int64?) -> String {

@@ -413,6 +413,8 @@ enum GeometryChecks {
         let trayItem = try await trayStorage.ingest(sourceFile)
         precondition(FileManager.default.fileExists(atPath: trayItem.storedURL.path))
         precondition(trayItem.displayName == "fixture.txt")
+        precondition(trayStorage.isManagedURL(trayItem.storedURL))
+        precondition(!trayStorage.isManagedURL(sourceFile))
         try trayStorage.persist([trayItem])
         precondition(trayStorage.loadItems() == [trayItem])
         try trayStorage.remove(trayItem)

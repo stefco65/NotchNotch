@@ -24,12 +24,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let hapticService: HapticProviding = HapticService()
     private let logger = AppLogger.app
 
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        // Before any notch window / SwiftUI hosting is built — captures AppKit
+        // layout traps and early failures into Application Support logs.
+        AppErrorLog.bootstrap()
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
-        spotifyMusicStore.startMonitoring()
-        agentMonitorStore.startMonitoring()
-        settingsStore.refreshInstalledShortcuts()
 
+        // Surface first: overlays + menu bar, then background monitors.
         settingsStore.onGeometryChange = { [weak self] in
             self?.windowControllers.values.forEach { $0.refreshGeometry() }
         }
@@ -50,12 +54,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         installStatusItem()
         updateDisplaySummary()
 
+        spotifyMusicStore.startMonitoring()
+        agentMonitorStore.startMonitoring()
+        settingsStore.refreshInstalledShortcuts()
+
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak spotifyMusicStore] in
             spotifyMusicStore?.requestAutomationAccessAndRefresh()
         }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        AppErrorLog.recordSessionEnd()
         spotifyMusicStore.stopMonitoring()
         if let screenParametersObserver {
             NotificationCenter.default.removeObserver(screenParametersObserver)
@@ -85,7 +94,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func rebuildOverlays() {
         let screens = NSScreen.screens
         guard let primaryScreen = primaryMacScreen else {
-            logger.error("No display is available; overlays were removed")
+            AppLogger.fileError(
+                "No display is available; overlays were removed",
+                category: "display",
+                logger: logger
+            )
             removeAllOverlays()
             return
         }
@@ -200,6 +213,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         displayInfoMenuItem = displayItem
 
         menu.addItem(withTitle: "Copy Display Diagnostics", action: #selector(copyDiagnostics), keyEquivalent: "d").target = self
+        menu.addItem(withTitle: "Reveal Error Logs…", action: #selector(revealErrorLogs), keyEquivalent: "l").target = self
         menu.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",").target = self
         menu.addItem(.separator())
         menu.addItem(withTitle: "Quit NotchNook", action: #selector(quit), keyEquivalent: "q").target = self
@@ -228,6 +242,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let diagnostics = primaryController?.display.diagnostics else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(diagnostics, forType: .string)
+    }
+
+    @objc private func revealErrorLogs() {
+        AppErrorLog.revealInFinder()
     }
 
     @objc private func openSettings() {

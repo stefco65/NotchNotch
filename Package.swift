@@ -8,13 +8,18 @@ let package = Package(
         .macOS(.v14)
     ],
     products: [
-        .executable(name: "NotchNook", targets: ["NotchNook"])
+        .executable(name: "NotchNook", targets: ["NotchNook"]),
+        .executable(name: "agentbridge", targets: ["agentbridge"])
     ],
     targets: [
         .executableTarget(
             name: "NotchNook",
             path: "NotchApp",
             exclude: ["Resources"]
+        ),
+        .executableTarget(
+            name: "agentbridge",
+            path: "Tools/agentbridge"
         ),
         .testTarget(
             name: "NotchAppTests",

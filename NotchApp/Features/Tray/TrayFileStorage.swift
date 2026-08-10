@@ -41,6 +41,13 @@ struct TrayFileStorage: Sendable {
         }
     }
 
+    /// Returns true when `url` points inside this Tray storage root (including managed copies).
+    func isManagedURL(_ url: URL) -> Bool {
+        let rootPath = rootURL.resolvingSymlinksInPath().path
+        let path = url.resolvingSymlinksInPath().path
+        return path == rootPath || path.hasPrefix(rootPath + "/")
+    }
+
     func persist(_ items: [TrayItem]) throws {
         try FileManager.default.createDirectory(
             at: rootURL,

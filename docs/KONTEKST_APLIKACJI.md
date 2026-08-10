@@ -43,7 +43,7 @@ Głównym celem produktu jest zapewnienie szybkiego dostępu do małych informac
 
 - komponent `Lustro` nie uruchamia kamery; pokazuje ogólną kartę-placeholder,
 - komponent `System` nie odczytuje stanu urządzenia; pokazuje kartę-placeholder,
-- z elementów Tray nie można obecnie rozpocząć drag-and-drop do innej aplikacji,
+- z elementów Tray można przeciągnąć plik/folder do innej aplikacji (AppKit `NSDraggingSource`, kopia) oraz skopiować przez menu kontekstowe,
 - Tray nie ma akcji „wyczyść wszystko” ani AirDrop,
 - nie ma osobnego Drop Mode ze strefami kontekstowymi,
 - Live Activities (Dynamic Island) dla agentów/zadań są zaimplementowane jako osobny bubble po prawej stronie notcha,
@@ -406,10 +406,18 @@ Pokazuje po jednym wierszu dla:
 Każdy wiersz ma ikonę aplikacji i trzy liczniki:
 
 - niebieski — `working`,
-- pomarańczowy — `stopped`,
-- zielony — `done`.
+- pomarańczowy — `waitingForUser` (UI: `stopped`),
+- zielony — `completed` (UI: `done`).
 
-Store odświeża dane co 2 sekundy. Jeżeli dana aplikacja nie działa, jej wiersz jest przygaszony, a liczniki wynoszą zero.
+Architektura monitora:
+
+- `ApplicationPresenceMonitor` (NSWorkspace + bundle ID) wykrywa start/stop aplikacji providera,
+- adaptery (`CursorAdapter`, `CodexAdapter`, `AntigravityAdapter`) normalizują eventy i robią `resync()`,
+- `AgentStateStore` jest jedynym źródłem prawdy; liczniki są wyliczane ze snapshotów agentów,
+- IPC Unix socket (`~/Library/Application Support/NotchNook/agent-events.sock`) + CLI `agentbridge` przyjmują eventy z hooków,
+- okresowa reconciliation (~20 s) oraz watchery plików stanu/logów naprawiają utracone eventy.
+
+Jeżeli dana aplikacja nie działa, jej wiersz jest przygaszony, a liczniki wynoszą zero — niezależnie od wcześniejszego stanu runtime.
 
 Skaner czyta lokalne dane aplikacji:
 
@@ -449,7 +457,7 @@ Po upuszczeniu każdy plik lub folder:
 
 Karta pokazuje systemową ikonę pliku, nazwę, rozmiar lub oznaczenie Folder oraz przycisk usunięcia. Usunięcie kasuje zarówno kopię z dysku, jak i rekord indeksu.
 
-Aktualna karta **nie ma modyfikatora draggable**, więc nie można jeszcze wyciągać elementu z Tray do innej aplikacji.
+Kartę można przeciągnąć do Findera lub innej aplikacji przez natywny AppKit `NSDraggingSource` (`TrayItemDragHandle`) — SwiftUI `.draggable` nie startuje wiarygodnie z `nonactivatingPanel`. Menu kontekstowe oferuje „Kopiuj” oraz „Pokaż w Finderze”. Drop z powrotem na Tray ignoruje URL-e już zarządzane przez storage.
 
 ### 11.10. `SettingsRootView` — Ustawienia
 
@@ -633,14 +641,17 @@ NSEvent global/local
   → natywna warstwa i SwiftUI renderują ten sam stan
 ```
 
-### Drop → Tray
+### Drop → Tray / drag z Tray
 
 ```text
 TrayView.dropDestination
-  → TrayStore.ingest
+  → TrayStore.ingest (pomija URL-e wewnątrz storage)
   → TrayFileStorage.copyItem
   → items @Published + tray-items.json
   → ponowny render kart
+
+TrayItemDragHandle (NSDraggingSource)
+  → beginDraggingSession + file URL pasteboard → Finder / inna aplikacja (kopia)
 ```
 
 ## 18. Mapa kodu
@@ -658,7 +669,7 @@ TrayView.dropDestination
 | Skróty | `NotchApp/Features/Shortcuts/` | CLI `shortcuts`, runner i przyciski |
 | Zadania | `NotchApp/Features/Tasks/` | CRUD, completion delay i UI |
 | Kalendarz | `NotchApp/Features/Calendar/` | EventKit, uprawnienia, lista wydarzeń |
-| Agenci | `NotchApp/Features/Agents/` | skan lokalnych sesji i liczniki |
+| Agenci | `NotchApp/Features/Agents/` | store + adaptery + IPC + resync liczników |
 | Tray | `NotchApp/Features/Tray/` | kopie plików, indeks, drop i karty |
 | testy | `Tests/NotchAppTests/` | geometria i logika store'ów |
 | core checks | `scripts/GeometryChecks.swift` | wykonywalne asercje bez XCTest |

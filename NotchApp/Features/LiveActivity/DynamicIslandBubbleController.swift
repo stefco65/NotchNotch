@@ -8,6 +8,7 @@ import SwiftUI
 final class DynamicIslandBubbleController {
     private let panel: NSPanel
     private let model = DynamicIslandBubbleModel()
+    private var hostingView: PassiveHostingView<DynamicIslandBubbleView>?
 
     init(anchorHeight: CGFloat) {
         panel = NSPanel(
@@ -25,6 +26,11 @@ final class DynamicIslandBubbleController {
         panel.level = NSWindow.Level(rawValue: NSWindow.Level.statusBar.rawValue + 1)
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         panel.animationBehavior = .none
+        // Plain view at launch — attach SwiftUI only when an activity is shown.
+        let placeholder = NSView(frame: .zero)
+        placeholder.wantsLayer = true
+        placeholder.layer?.backgroundColor = NSColor.clear.cgColor
+        panel.contentView = placeholder
 
         model.diameter = DynamicIslandLayout.bubbleDiameter(anchorHeight: anchorHeight)
         model.topPadding = max((max(anchorHeight, 12) - model.diameter) / 2, 0)
@@ -32,17 +38,6 @@ final class DynamicIslandBubbleController {
         model.restingOffset = DynamicIslandLayout.bubbleRestingLeadingInset(
             envelope: CGRect(x: 0, y: 0, width: 300, height: max(anchorHeight, 12))
         )
-
-        let hosting = NSHostingView(rootView: DynamicIslandBubbleView(model: model))
-        hosting.wantsLayer = true
-        hosting.layer?.backgroundColor = NSColor.clear.cgColor
-        // Without this the layer is treated as opaque and AppKit fills its
-        // full rectangular bounds with a solid backing color, which shows
-        // through as a square corner right where the main notch's rounded
-        // shoulder should reveal the desktop behind it — even while the
-        // SwiftUI content itself is at opacity 0.
-        hosting.layer?.isOpaque = false
-        panel.contentView = hosting
     }
 
     /// Repositions the bubble against the notch's right edge and runs the
@@ -55,6 +50,17 @@ final class DynamicIslandBubbleController {
         isNotchExpanded: Bool,
         animationDuration: TimeInterval
     ) {
+        let shouldShow = activity != nil && !isNotchExpanded
+        if !shouldShow {
+            model.isVisible = false
+            if panel.isVisible {
+                panel.orderOut(nil)
+            }
+            return
+        }
+
+        ensureHostingAttached()
+
         if let activity {
             model.activity = activity
         }
@@ -67,15 +73,19 @@ final class DynamicIslandBubbleController {
         model.restingOffset = DynamicIslandLayout.bubbleRestingLeadingInset(envelope: notchFrame)
 
         let targetFrame = DynamicIslandLayout.bubbleWindowFrame(adjacentTo: notchFrame)
-        if panel.frame != targetFrame {
-            if panel.isVisible, model.isVisible, animationDuration > 0 {
-                NSAnimationContext.runAnimationGroup { context in
-                    context.duration = animationDuration
-                    context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-                    panel.animator().setFrame(targetFrame, display: true)
-                }
-            } else {
-                panel.setFrame(targetFrame, display: true)
+        // Snap only — animated setFrame on an NSHostingView panel hits the same
+        // AppKit constraint-update crash as the main notch hover path.
+        if !CGRectEqualToRect(panel.frame, targetFrame) {
+            let host = hostingView
+            host?.removeFromSuperview()
+            NSAnimationContext.beginGrouping()
+            NSAnimationContext.current.duration = 0
+            NSAnimationContext.current.allowsImplicitAnimation = false
+            panel.setFrame(targetFrame, display: false)
+            NSAnimationContext.endGrouping()
+            if let host {
+                host.frame = panel.contentView?.bounds ?? .zero
+                panel.contentView?.addSubview(host)
             }
         }
 
@@ -85,7 +95,6 @@ final class DynamicIslandBubbleController {
             panel.orderFrontRegardless()
         }
 
-        let shouldShow = activity != nil && !isNotchExpanded
         guard model.isVisible != shouldShow else { return }
         withAnimation(
             animationDuration > 0
@@ -98,6 +107,19 @@ final class DynamicIslandBubbleController {
 
     func close() {
         panel.close()
+    }
+
+    private func ensureHostingAttached() {
+        guard hostingView == nil else { return }
+        let hosting = PassiveHostingView(rootView: DynamicIslandBubbleView(model: model))
+        hosting.wantsLayer = true
+        hosting.layer?.backgroundColor = NSColor.clear.cgColor
+        hosting.layer?.isOpaque = false
+        hosting.translatesAutoresizingMaskIntoConstraints = true
+        hosting.autoresizingMask = [.width, .height]
+        hosting.frame = panel.contentView?.bounds ?? .zero
+        panel.contentView?.addSubview(hosting)
+        hostingView = hosting
     }
 }
 
