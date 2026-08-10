@@ -43,7 +43,7 @@ Głównym celem produktu jest zapewnienie szybkiego dostępu do małych informac
 
 - komponent `Lustro` nie uruchamia kamery; pokazuje ogólną kartę-placeholder,
 - komponent `System` nie odczytuje stanu urządzenia; pokazuje kartę-placeholder,
-- z elementów Tray nie można obecnie rozpocząć drag-and-drop do innej aplikacji,
+- z elementów Tray można przeciągnąć plik/folder do innej aplikacji (AppKit `NSDraggingSource`, kopia) oraz skopiować przez menu kontekstowe,
 - Tray nie ma akcji „wyczyść wszystko” ani AirDrop,
 - nie ma osobnego Drop Mode ze strefami kontekstowymi,
 - Live Activities (Dynamic Island) dla agentów/zadań są zaimplementowane jako osobny bubble po prawej stronie notcha,
@@ -449,7 +449,7 @@ Po upuszczeniu każdy plik lub folder:
 
 Karta pokazuje systemową ikonę pliku, nazwę, rozmiar lub oznaczenie Folder oraz przycisk usunięcia. Usunięcie kasuje zarówno kopię z dysku, jak i rekord indeksu.
 
-Aktualna karta **nie ma modyfikatora draggable**, więc nie można jeszcze wyciągać elementu z Tray do innej aplikacji.
+Kartę można przeciągnąć do Findera lub innej aplikacji przez natywny AppKit `NSDraggingSource` (`TrayItemDragHandle`) — SwiftUI `.draggable` nie startuje wiarygodnie z `nonactivatingPanel`. Menu kontekstowe oferuje „Kopiuj” oraz „Pokaż w Finderze”. Drop z powrotem na Tray ignoruje URL-e już zarządzane przez storage.
 
 ### 11.10. `SettingsRootView` — Ustawienia
 
@@ -633,14 +633,17 @@ NSEvent global/local
   → natywna warstwa i SwiftUI renderują ten sam stan
 ```
 
-### Drop → Tray
+### Drop → Tray / drag z Tray
 
 ```text
 TrayView.dropDestination
-  → TrayStore.ingest
+  → TrayStore.ingest (pomija URL-e wewnątrz storage)
   → TrayFileStorage.copyItem
   → items @Published + tray-items.json
   → ponowny render kart
+
+TrayItemDragHandle (NSDraggingSource)
+  → beginDraggingSession + file URL pasteboard → Finder / inna aplikacja (kopia)
 ```
 
 ## 18. Mapa kodu
