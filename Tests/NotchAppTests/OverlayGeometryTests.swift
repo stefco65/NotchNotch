@@ -71,7 +71,7 @@ final class OverlayGeometryTests: XCTestCase {
 
         XCTAssertEqual(hovered.midX, collapsed.midX)
         XCTAssertEqual(hovered.maxY, collapsed.maxY)
-        XCTAssertEqual(hovered.width, collapsed.width + 40)
+        XCTAssertEqual(hovered.width, collapsed.width + DynamicIslandLayout.idleHoverExtraWidth)
         XCTAssertEqual(hovered.height, collapsed.height + 20)
     }
 

@@ -21,6 +21,7 @@ final class SolidBlackNotchHostingView<Content: View>: NSView {
     private var shoulderRadius: CGFloat = 7
     private var contentWidth: CGFloat = 0
     private var contentHeight: CGFloat = 0
+    private var contentOffsetX: CGFloat = 0
     private var didAttachHosting = false
 
     init(rootView: Content) {
@@ -116,13 +117,14 @@ final class SolidBlackNotchHostingView<Content: View>: NSView {
         return super.hitTest(point)
     }
 
-    /// Apply silhouette metrics. `contentWidth` / `contentHeight` describe the
-    /// drawn notch inside a potentially larger stable chrome window.
+    /// Apply silhouette metrics. `contentWidth` / `contentHeight` /
+    /// `contentOffsetX` describe the drawn notch inside a larger stable chrome.
     func setSurfaceAppearance(
         bottomRadius: CGFloat,
         shoulderRadius: CGFloat,
         contentWidth: CGFloat,
         contentHeight: CGFloat,
+        contentOffsetX: CGFloat = 0,
         targetWindowFrame: CGRect? = nil,
         springParams: AnimationSpring? = nil,
         reduceMotion: Bool = false
@@ -137,6 +139,7 @@ final class SolidBlackNotchHostingView<Content: View>: NSView {
             || self.shoulderRadius != shoulderRadius
         let sizeChanged = abs(self.contentWidth - width) > 0.05
             || abs(self.contentHeight - height) > 0.05
+            || abs(self.contentOffsetX - contentOffsetX) > 0.05
 
         guard radiiChanged || sizeChanged else { return }
 
@@ -144,6 +147,7 @@ final class SolidBlackNotchHostingView<Content: View>: NSView {
         self.shoulderRadius = shoulderRadius
         self.contentWidth = width
         self.contentHeight = height
+        self.contentOffsetX = contentOffsetX
         commitPathFillingCurrentBounds()
     }
 
@@ -163,8 +167,16 @@ final class SolidBlackNotchHostingView<Content: View>: NSView {
     private func commitPathFillingCurrentBounds() {
         let width = contentWidth > 1 ? contentWidth : bounds.width
         let height = contentHeight > 1 ? contentHeight : bounds.height
+        // Prefer the screen-aligned leading inset; fall back to centering only
+        // before the first metrics commit (contentWidth still unset).
+        let originX: CGFloat
+        if contentWidth > 1 {
+            originX = contentOffsetX
+        } else {
+            originX = (bounds.width - width) / 2
+        }
         let rect = CGRect(
-            x: (bounds.width - width) / 2,
+            x: originX,
             y: bounds.height - height,
             width: width,
             height: height

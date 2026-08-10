@@ -72,7 +72,10 @@ final class DynamicIslandBubbleController {
         model.attachedOffset = DynamicIslandLayout.bubbleAttachedLeadingInset()
         model.restingOffset = DynamicIslandLayout.bubbleRestingLeadingInset(envelope: notchFrame)
 
-        let targetFrame = DynamicIslandLayout.bubbleWindowFrame(adjacentTo: notchFrame)
+        let targetFrame = DynamicIslandLayout.bubbleWindowFrame(
+            adjacentTo: notchFrame,
+            restingHeight: restingHeight
+        )
         // Snap only — animated setFrame on an NSHostingView panel hits the same
         // AppKit constraint-update crash as the main notch hover path.
         if !CGRectEqualToRect(panel.frame, targetFrame) {

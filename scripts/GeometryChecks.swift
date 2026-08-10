@@ -57,7 +57,8 @@ enum GeometryChecks {
         precondition(customExpanded == CGRect(x: 50, y: 796, width: 900, height: 204))
 
         let hovered = NotchWindowController.frame(for: .hovered, display: display)
-        precondition(hovered == CGRect(x: 380, y: 954, width: 240, height: 46))
+        precondition(hovered == CGRect(x: 360, y: 954, width: 280, height: 46))
+        precondition(hovered.width == collapsed.width + DynamicIslandLayout.idleHoverExtraWidth)
 
         let musicHovered = NotchWindowController.frame(
             for: .hovered,
@@ -96,8 +97,8 @@ enum GeometryChecks {
         precondition(artworkHoverFrame.contains(CGPoint(x: 377, y: 982)))
         precondition(!artworkHoverFrame.contains(CGPoint(x: 500, y: 982)))
 
-        // DI: stable left (music collapsed left / physical left), right snapped
-        // to the physical notch maxX. Hover & musicPreview only grow height.
+        // DI: same centered capsule as without DI — bubble detaches past maxX.
+        // Hover / musicPreview keep full sideways growth (no physical.maxX clip).
         let physical = DynamicIslandLayout.physicalNotchFrame(display: display)
         precondition(physical == collapsed)
 
@@ -108,7 +109,7 @@ enum GeometryChecks {
             showsLiveActivity: true
         )
         precondition(idleDI == collapsed)
-        precondition(idleDI.maxX == physical.maxX)
+        precondition(idleDI.midX == physical.midX)
 
         let idleHoverDI = NotchWindowController.frame(
             for: .hovered,
@@ -116,8 +117,8 @@ enum GeometryChecks {
             showsNowPlaying: false,
             showsLiveActivity: true
         )
-        precondition(idleHoverDI.minX == idleDI.minX)
-        precondition(idleHoverDI.maxX == physical.maxX)
+        precondition(idleHoverDI == hovered)
+        precondition(idleHoverDI.midX == physical.midX)
         precondition(idleHoverDI.height == idleDI.height + 20)
 
         let musicDI = NotchWindowController.frame(
@@ -126,9 +127,8 @@ enum GeometryChecks {
             showsNowPlaying: true,
             showsLiveActivity: true
         )
-        precondition(musicDI.minX == playingCollapsed.minX)
-        precondition(musicDI.maxX == physical.maxX)
-        precondition(musicDI.width == physical.width + DynamicIslandLayout.compactExtraWidth / 2)
+        precondition(musicDI == playingCollapsed)
+        precondition(musicDI.midX == physical.midX)
 
         let musicHoverDI = NotchWindowController.frame(
             for: .hovered,
@@ -136,8 +136,7 @@ enum GeometryChecks {
             showsNowPlaying: true,
             showsLiveActivity: true
         )
-        precondition(musicHoverDI.minX == musicDI.minX)
-        precondition(musicHoverDI.maxX == physical.maxX)
+        precondition(musicHoverDI == musicHovered)
         precondition(musicHoverDI.width == musicDI.width)
         precondition(musicHoverDI.height == musicDI.height + 20)
 
@@ -147,8 +146,7 @@ enum GeometryChecks {
             showsNowPlaying: true,
             showsLiveActivity: true
         )
-        precondition(musicPreviewDI.minX == musicDI.minX)
-        precondition(musicPreviewDI.maxX == physical.maxX)
+        precondition(musicPreviewDI == musicPreview)
         precondition(musicPreviewDI.width == musicDI.width)
         precondition(musicPreviewDI.height == musicDI.height + 64)
 
@@ -159,11 +157,27 @@ enum GeometryChecks {
                 showsLiveActivity: true
             ) == 1
         )
-        let bubbleWindow = DynamicIslandLayout.bubbleWindowFrame(adjacentTo: musicDI)
+        let bubbleWindow = DynamicIslandLayout.bubbleWindowFrame(
+            adjacentTo: musicDI,
+            restingHeight: physical.height
+        )
         precondition(bubbleWindow.minX == musicDI.maxX - DynamicIslandLayout.attachOverlap)
         precondition(bubbleWindow.maxY == musicDI.maxY)
-        let idleBubble = DynamicIslandLayout.bubbleWindowFrame(adjacentTo: idleDI)
-        precondition(idleBubble.minX == bubbleWindow.minX)
+        let idleBubble = DynamicIslandLayout.bubbleWindowFrame(
+            adjacentTo: idleDI,
+            restingHeight: physical.height
+        )
+        precondition(idleBubble.minX == idleDI.maxX - DynamicIslandLayout.attachOverlap)
+        // Music capsule is wider, so its bubble rides further right.
+        precondition(bubbleWindow.minX > idleBubble.minX)
+
+        let chrome = NotchWindowController.windowFrame(for: .collapsed, display: display)
+        let offset = NotchWindowController.contentOffsetX(
+            visual: collapsed,
+            contentWidth: collapsed.width,
+            chrome: chrome
+        )
+        precondition(abs((chrome.minX + offset + collapsed.width / 2) - collapsed.midX) < 0.5)
 
         precondition(
             MarqueeMetrics.offset(
