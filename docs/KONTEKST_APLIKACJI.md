@@ -406,10 +406,18 @@ Pokazuje po jednym wierszu dla:
 Każdy wiersz ma ikonę aplikacji i trzy liczniki:
 
 - niebieski — `working`,
-- pomarańczowy — `stopped`,
-- zielony — `done`.
+- pomarańczowy — `waitingForUser` (UI: `stopped`),
+- zielony — `completed` (UI: `done`).
 
-Store odświeża dane co 2 sekundy. Jeżeli dana aplikacja nie działa, jej wiersz jest przygaszony, a liczniki wynoszą zero.
+Architektura monitora:
+
+- `ApplicationPresenceMonitor` (NSWorkspace + bundle ID) wykrywa start/stop aplikacji providera,
+- adaptery (`CursorAdapter`, `CodexAdapter`, `AntigravityAdapter`) normalizują eventy i robią `resync()`,
+- `AgentStateStore` jest jedynym źródłem prawdy; liczniki są wyliczane ze snapshotów agentów,
+- IPC Unix socket (`~/Library/Application Support/NotchNook/agent-events.sock`) + CLI `agentbridge` przyjmują eventy z hooków,
+- okresowa reconciliation (~20 s) oraz watchery plików stanu/logów naprawiają utracone eventy.
+
+Jeżeli dana aplikacja nie działa, jej wiersz jest przygaszony, a liczniki wynoszą zero — niezależnie od wcześniejszego stanu runtime.
 
 Skaner czyta lokalne dane aplikacji:
 
@@ -661,7 +669,7 @@ TrayItemDragHandle (NSDraggingSource)
 | Skróty | `NotchApp/Features/Shortcuts/` | CLI `shortcuts`, runner i przyciski |
 | Zadania | `NotchApp/Features/Tasks/` | CRUD, completion delay i UI |
 | Kalendarz | `NotchApp/Features/Calendar/` | EventKit, uprawnienia, lista wydarzeń |
-| Agenci | `NotchApp/Features/Agents/` | skan lokalnych sesji i liczniki |
+| Agenci | `NotchApp/Features/Agents/` | store + adaptery + IPC + resync liczników |
 | Tray | `NotchApp/Features/Tray/` | kopie plików, indeks, drop i karty |
 | testy | `Tests/NotchAppTests/` | geometria i logika store'ów |
 | core checks | `scripts/GeometryChecks.swift` | wykonywalne asercje bez XCTest |

@@ -26,10 +26,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
-        spotifyMusicStore.startMonitoring()
-        agentMonitorStore.startMonitoring()
-        settingsStore.refreshInstalledShortcuts()
 
+        // Surface first: overlays + menu bar, then background monitors.
         settingsStore.onGeometryChange = { [weak self] in
             self?.windowControllers.values.forEach { $0.refreshGeometry() }
         }
@@ -49,6 +47,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         rebuildOverlays()
         installStatusItem()
         updateDisplaySummary()
+
+        spotifyMusicStore.startMonitoring()
+        agentMonitorStore.startMonitoring()
+        settingsStore.refreshInstalledShortcuts()
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak spotifyMusicStore] in
             spotifyMusicStore?.requestAutomationAccessAndRefresh()
