@@ -11,7 +11,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let agentMonitorStore = AgentMonitorStore()
     lazy var liveActivityCenter = LiveActivityCenter(
         agentMonitorStore: agentMonitorStore,
-        taskStore: taskStore
+        taskStore: taskStore,
+        spotifyMusicStore: spotifyMusicStore
     )
 
     private var statusItem: NSStatusItem?
@@ -163,6 +164,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if didEnter {
                     hapticService.performHoverFeedback()
                 }
+            },
+            onPointerMovedWhileInside: { [weak controller] point in
+                // Refine hovered → musicPreview without re-firing enter haptics.
+                _ = controller?.setHoverActive(true, at: point)
             },
             onPointerDown: { [weak controller] point in
                 controller?.handlePointerDown(at: point)

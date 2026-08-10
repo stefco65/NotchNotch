@@ -1,10 +1,9 @@
 import AppKit
 import SwiftUI
 
-/// Detached right pill of the Dynamic Island. It occupies the right slot of
-/// the compact music-expanded envelope while the main notch keeps the left
-/// (making the notch asymmetric). Ordered below the notch window so the
-/// attach/detach animation reads as the right side cutting off.
+/// Detached right pill of the Dynamic Island. It sits to the right of the
+/// fixed main notch and animates from tucked-under-the-shoulder to a clear
+/// gap. Ordered below the notch window so the attach overlap stays hidden.
 @MainActor
 final class DynamicIslandBubbleController {
     private let panel: NSPanel
@@ -37,32 +36,41 @@ final class DynamicIslandBubbleController {
         let hosting = NSHostingView(rootView: DynamicIslandBubbleView(model: model))
         hosting.wantsLayer = true
         hosting.layer?.backgroundColor = NSColor.clear.cgColor
+        // Without this the layer is treated as opaque and AppKit fills its
+        // full rectangular bounds with a solid backing color, which shows
+        // through as a square corner right where the main notch's rounded
+        // shoulder should reveal the desktop behind it — even while the
+        // SwiftUI content itself is at opacity 0.
+        hosting.layer?.isOpaque = false
         panel.contentView = hosting
     }
 
-    /// Repositions the bubble in the envelope's right slot and runs the
-    /// detach / reattach animation. `notchWindow` stays above the bubble so
-    /// the overlap is invisible while attached.
+    /// Repositions the bubble against the notch's right edge and runs the
+    /// detach / reattach animation on the same duration as the notch geometry.
     func update(
         activity: LiveActivity?,
-        envelope: CGRect,
+        notchFrame: CGRect,
+        restingHeight: CGFloat,
         notchWindow: NSWindow?,
-        isNotchExpanded: Bool
+        isNotchExpanded: Bool,
+        animationDuration: TimeInterval
     ) {
         if let activity {
             model.activity = activity
         }
 
-        model.diameter = DynamicIslandLayout.bubbleDiameter(anchorHeight: envelope.height)
-        model.topPadding = max((envelope.height - model.diameter) / 2, 0)
+        // Diameter stays locked to the physical notch height so hover growth
+        // only recenters the pill vertically — it must not widen the cut.
+        model.diameter = DynamicIslandLayout.bubbleDiameter(anchorHeight: restingHeight)
+        model.topPadding = max((notchFrame.height - model.diameter) / 2, 0)
         model.attachedOffset = DynamicIslandLayout.bubbleAttachedLeadingInset()
-        model.restingOffset = DynamicIslandLayout.bubbleRestingLeadingInset(envelope: envelope)
+        model.restingOffset = DynamicIslandLayout.bubbleRestingLeadingInset(envelope: notchFrame)
 
-        let targetFrame = DynamicIslandLayout.bubbleWindowFrame(envelope: envelope)
+        let targetFrame = DynamicIslandLayout.bubbleWindowFrame(adjacentTo: notchFrame)
         if panel.frame != targetFrame {
-            if panel.isVisible, model.isVisible {
+            if panel.isVisible, model.isVisible, animationDuration > 0 {
                 NSAnimationContext.runAnimationGroup { context in
-                    context.duration = 0.28
+                    context.duration = animationDuration
                     context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
                     panel.animator().setFrame(targetFrame, display: true)
                 }
@@ -79,11 +87,10 @@ final class DynamicIslandBubbleController {
 
         let shouldShow = activity != nil && !isNotchExpanded
         guard model.isVisible != shouldShow else { return }
-        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         withAnimation(
-            reduceMotion
-                ? .easeInOut(duration: 0.1)
-                : .spring(response: 0.42, dampingFraction: 0.72)
+            animationDuration > 0
+                ? .easeInOut(duration: animationDuration)
+                : .linear(duration: 0)
         ) {
             model.isVisible = shouldShow
         }

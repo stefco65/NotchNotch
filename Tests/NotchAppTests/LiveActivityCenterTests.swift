@@ -17,28 +17,24 @@ final class LiveActivityCenterTests: XCTestCase {
         )
     }
 
-    func testAgentHighlightPrefersStoppedThenDoneThenWorking() {
-        // Orange (stopped) wins over everything.
+    func testAgentHighlightPrefersWorkingThenStoppedThenDone() {
         XCTAssertEqual(
             LiveActivityCenter.agentHighlight(from: [
                 summary(.codex, working: 2, stopped: 1, done: 3)
             ]),
+            .agents(state: .working, count: 2)
+        )
+        XCTAssertEqual(
+            LiveActivityCenter.agentHighlight(from: [
+                summary(.codex, stopped: 1, done: 3)
+            ]),
             .agents(state: .stopped, count: 1)
         )
-
-        // Green (done) wins over blue (working).
         XCTAssertEqual(
             LiveActivityCenter.agentHighlight(from: [
-                summary(.codex, working: 2, done: 3)
+                summary(.codex, done: 3)
             ]),
             .agents(state: .done, count: 3)
-        )
-
-        XCTAssertEqual(
-            LiveActivityCenter.agentHighlight(from: [
-                summary(.codex, working: 2)
-            ]),
-            .agents(state: .working, count: 2)
         )
     }
 
@@ -58,46 +54,100 @@ final class LiveActivityCenterTests: XCTestCase {
         ]))
     }
 
-    func testResolvePrefersAgentTakeoverOverTasks() {
+    func testInitialOwnerPrefersAgentsOverTasksAndMusic() {
         XCTAssertEqual(
-            LiveActivityCenter.resolve(
-                agentHighlight: .agents(state: .stopped, count: 2),
-                agentTakeoverActive: true,
-                openTaskCount: 5
+            LiveActivityCenter.initialOwner(
+                agentHighlight: .agents(state: .working, count: 1),
+                openTaskCount: 5,
+                isMusicPlaying: true
             ),
-            .agents(state: .stopped, count: 2)
+            .agents
+        )
+        XCTAssertEqual(
+            LiveActivityCenter.initialOwner(
+                agentHighlight: nil,
+                openTaskCount: 5,
+                isMusicPlaying: true
+            ),
+            .tasks
+        )
+        XCTAssertEqual(
+            LiveActivityCenter.initialOwner(
+                agentHighlight: nil,
+                openTaskCount: 0,
+                isMusicPlaying: true
+            ),
+            .music
+        )
+        XCTAssertEqual(
+            LiveActivityCenter.initialOwner(
+                agentHighlight: nil,
+                openTaskCount: 0,
+                isMusicPlaying: false
+            ),
+            .none
         )
     }
 
-    func testResolveFallsBackToTasksAfterTakeover() {
+    func testResolveFollowsOwnerLastUpdateWins() {
         XCTAssertEqual(
             LiveActivityCenter.resolve(
-                agentHighlight: .agents(state: .done, count: 2),
-                agentTakeoverActive: false,
+                owner: .agents,
+                agentHighlight: .agents(state: .working, count: 2),
+                openTaskCount: 5
+            ),
+            .agents(state: .working, count: 2)
+        )
+        XCTAssertEqual(
+            LiveActivityCenter.resolve(
+                owner: .tasks,
+                agentHighlight: .agents(state: .working, count: 2),
                 openTaskCount: 5
             ),
             .tasks(count: 5)
         )
-    }
-
-    func testResolveHidesBubbleWithNothingToShow() {
         XCTAssertNil(
             LiveActivityCenter.resolve(
+                owner: .music,
+                agentHighlight: .agents(state: .working, count: 2),
+                openTaskCount: 5
+            )
+        )
+        XCTAssertEqual(
+            LiveActivityCenter.resolve(
+                owner: .agents,
+                agentHighlight: .agents(state: .done, count: 2),
+                openTaskCount: 5
+            ),
+            .agents(state: .done, count: 2)
+        )
+    }
+
+    func testResolveHidesWhenOwnerHasNothingToShow() {
+        XCTAssertNil(
+            LiveActivityCenter.resolve(
+                owner: .agents,
                 agentHighlight: nil,
-                agentTakeoverActive: true,
+                openTaskCount: 3
+            )
+        )
+        XCTAssertNil(
+            LiveActivityCenter.resolve(
+                owner: .tasks,
+                agentHighlight: .agents(state: .done, count: 1),
                 openTaskCount: 0
             )
         )
         XCTAssertNil(
             LiveActivityCenter.resolve(
+                owner: .none,
                 agentHighlight: .agents(state: .working, count: 1),
-                agentTakeoverActive: false,
-                openTaskCount: 0
+                openTaskCount: 2
             )
         )
     }
 
-    func testSplitGeometryCutsRightSlotFromEnvelope() {
+    func testDIClipsCenteredCapsuleToPhysicalRight() {
         let display = DisplayDescriptor(
             id: 1,
             frame: CGRect(x: 0, y: 0, width: 1000, height: 1000),
@@ -114,30 +164,61 @@ final class LiveActivityCenterTests: XCTestCase {
             )
         )
 
-        let envelope = DynamicIslandLayout.compactEnvelope(
+        let physical = DynamicIslandLayout.physicalNotchFrame(display: display)
+        XCTAssertEqual(physical, CGRect(x: 400, y: 974, width: 200, height: 26))
+
+        let playingNoDI = DynamicIslandLayout.centeredCapsule(
+            for: .collapsed,
+            display: display,
+            showsNowPlaying: true
+        )
+        XCTAssertEqual(playingNoDI, CGRect(x: 350, y: 974, width: 300, height: 26))
+
+        let musicDI = DynamicIslandLayout.compactEnvelope(
             for: .collapsed,
             display: display,
             showsNowPlaying: true,
             showsLiveActivity: true
         )
-        XCTAssertEqual(envelope, CGRect(x: 350, y: 974, width: 300, height: 26))
+        XCTAssertEqual(musicDI.minX, playingNoDI.minX)
+        XCTAssertEqual(musicDI.maxX, physical.maxX)
+        XCTAssertEqual(musicDI, CGRect(x: 350, y: 974, width: 250, height: 26))
 
-        let main = DynamicIslandLayout.mainNotchFrame(
-            envelope: envelope,
+        let musicHoverDI = DynamicIslandLayout.compactEnvelope(
+            for: .hovered,
+            display: display,
+            showsNowPlaying: true,
             showsLiveActivity: true
         )
-        let slot = DynamicIslandLayout.bubbleSlotWidth(surfaceHeight: envelope.height)
-        XCTAssertEqual(main.minX, envelope.minX)
-        XCTAssertEqual(
-            main.width,
-            envelope.width - DynamicIslandLayout.splitGap - slot
-        )
-        // Asymmetric: centroid shifts left of the display center.
-        XCTAssertLessThan(main.midX, display.frame.midX)
+        XCTAssertEqual(musicHoverDI.minX, musicDI.minX)
+        XCTAssertEqual(musicHoverDI.maxX, physical.maxX)
+        XCTAssertEqual(musicHoverDI.width, musicDI.width)
+        XCTAssertEqual(musicHoverDI.height, musicDI.height + 20)
 
-        let bubbleWindow = DynamicIslandLayout.bubbleWindowFrame(envelope: envelope)
-        XCTAssertGreaterThanOrEqual(bubbleWindow.maxX, envelope.maxX - 1)
-        XCTAssertEqual(bubbleWindow.maxY, envelope.maxY)
+        let musicPreviewDI = DynamicIslandLayout.compactEnvelope(
+            for: .musicPreview,
+            display: display,
+            showsNowPlaying: true,
+            showsLiveActivity: true
+        )
+        XCTAssertEqual(musicPreviewDI.minX, musicDI.minX)
+        XCTAssertEqual(musicPreviewDI.maxX, physical.maxX)
+        XCTAssertEqual(musicPreviewDI.width, musicDI.width)
+        XCTAssertEqual(musicPreviewDI.height, musicDI.height + 64)
+
+        let idleHoverDI = DynamicIslandLayout.compactEnvelope(
+            for: .hovered,
+            display: display,
+            showsNowPlaying: false,
+            showsLiveActivity: true
+        )
+        XCTAssertEqual(idleHoverDI.minX, physical.minX)
+        XCTAssertEqual(idleHoverDI.maxX, physical.maxX)
+        XCTAssertEqual(idleHoverDI.height, physical.height + 20)
+
+        let musicBubble = DynamicIslandLayout.bubbleWindowFrame(adjacentTo: musicDI)
+        let idleBubble = DynamicIslandLayout.bubbleWindowFrame(adjacentTo: physical)
+        XCTAssertEqual(musicBubble.minX, idleBubble.minX)
 
         XCTAssertEqual(DynamicIslandLayout.bubbleDiameter(anchorHeight: 37), 29)
         XCTAssertEqual(DynamicIslandLayout.bubbleDiameter(anchorHeight: 12), 22)

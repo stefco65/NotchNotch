@@ -31,6 +31,7 @@ final class NotchWindowController: NSWindowController {
     private var liveActivityCancellable: AnyCancellable?
     private var surfaceHostView: SolidBlackNotchHostingView<OverlaySurfaceView>?
     private var bubbleController: DynamicIslandBubbleController?
+    private var geometryAnimator: NotchGeometryAnimator?
     private(set) var state: SurfaceState = .collapsed
 
     init(
@@ -91,14 +92,24 @@ final class NotchWindowController: NSWindowController {
 
         super.init(window: panel)
         surfaceHostView = hostingView
+        let initialMetrics = PresentationMetrics(
+            frame: initialFrame,
+            bottomRadius: collapsedRadii.bottom,
+            shoulderRadius: collapsedRadii.shoulder,
+            horizontalScale: 1,
+            glowOpacity: 0
+        )
+        let animator = NotchGeometryAnimator(initial: initialMetrics)
+        animator.onApply = { [weak self] metrics in
+            self?.applyPresentedMetrics(metrics)
+        }
+        geometryAnimator = animator
+        model.bottomRadius = collapsedRadii.bottom
+        model.shoulderRadius = collapsedRadii.shoulder
+        model.horizontalScale = 1
+        model.glowOpacity = 0
         model.onToggle = { [weak self] in self?.toggle() }
         model.onOpenSettings = { [weak self] in self?.onOpenSettings?() }
-        model.onMusicArtworkHover = { [weak self] in
-            guard let self,
-                  self.spotifyMusicStore.hasActiveTrack,
-                  self.state == .collapsed || self.state == .hovered else { return }
-            self.transition(to: .musicPreview)
-        }
         spotifyPlaybackCancellable = spotifyMusicStore.$hasActiveTrack
             .removeDuplicates()
             .dropFirst()
@@ -119,12 +130,12 @@ final class NotchWindowController: NSWindowController {
         )
         liveActivityCancellable = liveActivityCenter.$activity
             .removeDuplicates()
+            .dropFirst()
             .sink { [weak self] activity in
                 MainActor.assumeIsolated {
                     guard let self else { return }
-                    // Activity visibility changes the main notch width
-                    // (right side cuts off into the bubble), so refresh
-                    // geometry together with the bubble.
+                    // Live activity detaches to the right of a fixed notch —
+                    // refresh so the bubble tracks state without shifting the body.
                     self.model.showsLiveActivity = activity != nil && self.state != .expanded
                     self.refreshGeometry()
                 }
@@ -138,7 +149,6 @@ final class NotchWindowController: NSWindowController {
     func showCollapsed() {
         transition(to: .collapsed)
         window?.orderFrontRegardless()
-        updateBubble(activity: liveActivityCenter.activity)
     }
 
     override func close() {
@@ -150,20 +160,27 @@ final class NotchWindowController: NSWindowController {
         liveActivityCenter.activity != nil && state != .expanded
     }
 
-    /// Repositions the dynamic-island bubble in the right slot of the compact
-    /// envelope (the part cut off from the asymmetric main notch).
-    private func updateBubble(activity: LiveActivity?) {
+    /// Parks the dynamic-island bubble against the shortened notch's right edge.
+    private func updateBubble(activity: LiveActivity?, duration: TimeInterval) {
         let envelope = DynamicIslandLayout.compactEnvelope(
             for: state,
             display: display,
             showsNowPlaying: spotifyMusicStore.hasActiveTrack,
             showsLiveActivity: showsLiveActivity
         )
+        let notchFrame = DynamicIslandLayout.mainNotchFrame(
+            envelope: envelope,
+            display: display,
+            showsLiveActivity: showsLiveActivity,
+            showsNowPlaying: spotifyMusicStore.hasActiveTrack
+        )
         bubbleController?.update(
             activity: activity,
-            envelope: envelope,
+            notchFrame: notchFrame,
+            restingHeight: max(display.anchor.rect.height, 12),
             notchWindow: window,
-            isNotchExpanded: state == .expanded
+            isNotchExpanded: state == .expanded,
+            animationDuration: duration
         )
     }
 
@@ -178,39 +195,7 @@ final class NotchWindowController: NSWindowController {
     }
 
     func refreshGeometry(showsNowPlaying: Bool? = nil) {
-        guard let window else { return }
-        let showsNowPlaying = showsNowPlaying ?? spotifyMusicStore.hasActiveTrack
-        let liveActivity = showsLiveActivity
-        model.showsLiveActivity = liveActivity
-        let radii = Self.surfaceRadii(for: state)
-        let targetFrame = Self.frame(
-            for: state,
-            display: display,
-            expandedWidth: settingsStore.expandedWidth,
-            showsNowPlaying: showsNowPlaying,
-            showsLiveActivity: liveActivity
-        )
-        surfaceHostView?.setSurfaceAppearance(
-            bottomRadius: radii.bottom,
-            shoulderRadius: radii.shoulder,
-            horizontalScale: Self.surfaceHorizontalScale(
-                for: state,
-                showsNowPlaying: showsNowPlaying,
-                showsLiveActivity: liveActivity
-            ),
-            targetWindowFrame: targetFrame,
-            springParams: AnimationSpring.forState(state),
-            reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-        )
-        let params = AnimationSpring.forState(state)
-        let duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-            ? 0.1 : params.settlingDuration
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = duration
-            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-            window.animator().setFrame(targetFrame, display: true)
-        }
-        updateBubble(activity: liveActivityCenter.activity)
+        commitPresentation(to: state, showsNowPlaying: showsNowPlaying)
     }
 
     func handlePointerDown(at point: CGPoint) {
@@ -297,8 +282,8 @@ final class NotchWindowController: NSWindowController {
                 showsNowPlaying: true,
                 showsLiveActivity: showsLiveActivity
             )
-                .insetBy(dx: -12, dy: -10)
-                .contains(point)
+            .insetBy(dx: -12, dy: -10)
+            .contains(point)
         case .expanded:
             false
         }
@@ -366,47 +351,91 @@ final class NotchWindowController: NSWindowController {
     }
 
     private func transition(to newState: SurfaceState) {
-        guard let window, newState != state || !window.isVisible else { return }
-        state = newState
+        guard newState != state || window?.isVisible != true else { return }
+        commitPresentation(to: newState)
+        logger.debug(
+            "Surface transitioned to \(String(describing: newState), privacy: .public)"
+        )
+    }
 
+    /// Single entry point for every geometry / silhouette change. Always
+    /// supersedes any in-flight animation from the currently presented metrics.
+    private func commitPresentation(
+        to newState: SurfaceState,
+        showsNowPlaying: Bool? = nil
+    ) {
+        let showsNowPlaying = showsNowPlaying ?? spotifyMusicStore.hasActiveTrack
         let liveActivity = liveActivityCenter.activity != nil && newState != .expanded
-        let radii = Self.surfaceRadii(for: newState)
-        let targetFrame = Self.frame(
+        let target = presentationMetrics(
             for: newState,
-            display: display,
-            expandedWidth: settingsStore.expandedWidth,
-            showsNowPlaying: spotifyMusicStore.hasActiveTrack,
+            showsNowPlaying: showsNowPlaying,
             showsLiveActivity: liveActivity
         )
+
+        state = newState
         model.surfaceState = newState
         model.showsLiveActivity = liveActivity
 
         let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-        let params = AnimationSpring.forState(newState)
-
-        // Animuj kształt CAShapeLayer zsynchronizowany z oknem
-        surfaceHostView?.setSurfaceAppearance(
-            bottomRadius: radii.bottom,
-            shoulderRadius: radii.shoulder,
-            horizontalScale: Self.surfaceHorizontalScale(
-                for: newState,
-                showsNowPlaying: spotifyMusicStore.hasActiveTrack,
-                showsLiveActivity: liveActivity
-            ),
-            targetWindowFrame: targetFrame,
-            springParams: params,
+        let duration = AnimationSpring.windowFrameDuration(
+            for: newState,
             reduceMotion: reduceMotion
         )
 
-        let duration = reduceMotion ? 0.1 : params.settlingDuration
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = duration
-            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-            window.animator().setFrame(targetFrame, display: true)
+        if let animator = geometryAnimator {
+            animator.commit(target, duration: duration)
+        } else {
+            applyPresentedMetrics(target)
         }
-        updateBubble(activity: liveActivityCenter.activity)
+        updateBubble(activity: liveActivityCenter.activity, duration: duration)
+    }
 
-        logger.debug("Surface transitioned to \(String(describing: newState), privacy: .public), frame=\(String(describing: targetFrame), privacy: .public)")
+    private func presentationMetrics(
+        for state: SurfaceState,
+        showsNowPlaying: Bool,
+        showsLiveActivity: Bool
+    ) -> PresentationMetrics {
+        let radii = Self.surfaceRadii(for: state)
+        let showsGlow = state == .hovered || state == .musicPreview
+        return PresentationMetrics(
+            frame: Self.frame(
+                for: state,
+                display: display,
+                expandedWidth: settingsStore.expandedWidth,
+                showsNowPlaying: showsNowPlaying,
+                showsLiveActivity: showsLiveActivity
+            ),
+            bottomRadius: radii.bottom,
+            shoulderRadius: radii.shoulder,
+            horizontalScale: Self.surfaceHorizontalScale(
+                for: state,
+                showsNowPlaying: showsNowPlaying,
+                showsLiveActivity: showsLiveActivity
+            ),
+            glowOpacity: showsGlow ? 1 : 0
+        )
+    }
+
+    private func applyPresentedMetrics(_ metrics: PresentationMetrics) {
+        guard let window else { return }
+
+        // Direct setFrame (no NSAnimationContext) — the geometry animator is
+        // already the timeline. Skipping unchanged frames avoids AppKit's
+        // "too many Update Constraints in Window" runaway.
+        if window.frame != metrics.frame {
+            window.setFrame(metrics.frame, display: true)
+        }
+
+        surfaceHostView?.setSurfaceAppearance(
+            bottomRadius: metrics.bottomRadius,
+            shoulderRadius: metrics.shoulderRadius,
+            horizontalScale: metrics.horizontalScale
+        )
+
+        model.bottomRadius = metrics.bottomRadius
+        model.shoulderRadius = metrics.shoulderRadius
+        model.horizontalScale = metrics.horizontalScale
+        model.glowOpacity = metrics.glowOpacity
     }
 
     static func frame(
@@ -437,7 +466,9 @@ final class NotchWindowController: NSWindowController {
         )
         return DynamicIslandLayout.mainNotchFrame(
             envelope: envelope,
-            showsLiveActivity: showsLiveActivity
+            display: display,
+            showsLiveActivity: showsLiveActivity,
+            showsNowPlaying: showsNowPlaying
         )
     }
 
@@ -460,7 +491,7 @@ final class NotchWindowController: NSWindowController {
         showsLiveActivity: Bool = false
     ) -> CGFloat {
         // The classic music capsule slightly under-fills the window. When the
-        // island is split the window already matches the asymmetric body, so
+        // island is split the window already matches the shortened body, so
         // keep scale at 1 to avoid double-shrinking the right edge.
         guard state == .collapsed, showsNowPlaying, !showsLiveActivity else { return 1 }
         return 280 / 300
@@ -476,22 +507,29 @@ struct AnimationSpring {
     let stiffness: Double
     let mass: Double
 
-    /// Approximate settling duration (95% threshold).
-    var settlingDuration: TimeInterval {
-        // heuristic: 3 * (2*mass / (dampingRatio * 2 * sqrt(stiffness*mass)))
-        let criticalDamping = 2 * sqrt(stiffness * mass)
-        let beta = dampingRatio * criticalDamping
-        guard beta > 0 else { return 0.4 }
-        return TimeInterval(min(6.0 / beta, 2.0))
+    /// Fixed window-frame durations from the product spec — hover grows
+    /// sideways/down in ~0.14s, music preview ~0.22s, open ~0.28s.
+    /// Every silhouette property (radii, scale, glow) shares this duration.
+    static func windowFrameDuration(
+        for state: NotchWindowController.SurfaceState,
+        reduceMotion: Bool
+    ) -> TimeInterval {
+        if reduceMotion { return 0.1 }
+        switch state {
+        case .collapsed, .hovered:
+            return 0.14
+        case .musicPreview:
+            return 0.22
+        case .expanded:
+            return 0.28
+        }
     }
 
     static func forState(_ state: NotchWindowController.SurfaceState) -> AnimationSpring {
         switch state {
         case .expanded:
-            // Miękkie otwarcie – spring z lekkim odbiciem
             return AnimationSpring(dampingRatio: 0.72, stiffness: 380, mass: 1.0)
         case .collapsed:
-            // Szybkie zamknięcie bez odbicia
             return AnimationSpring(dampingRatio: 0.90, stiffness: 560, mass: 1.0)
         case .hovered:
             return AnimationSpring(dampingRatio: 0.82, stiffness: 460, mass: 1.0)
@@ -514,9 +552,14 @@ private final class OverlayPresentationModel: ObservableObject {
     /// music surface hides its right-side playback indicator so that slot
     /// belongs to the live-activity bubble.
     @Published var showsLiveActivity = false
+    /// Live silhouette metrics driven by `NotchGeometryAnimator` so SwiftUI
+    /// clip / glow stay locked to the native black body.
+    @Published var bottomRadius: CGFloat = 8
+    @Published var shoulderRadius: CGFloat = 7
+    @Published var horizontalScale: CGFloat = 1
+    @Published var glowOpacity: CGFloat = 0
     var onToggle: (() -> Void)?
     var onOpenSettings: (() -> Void)?
-    var onMusicArtworkHover: (() -> Void)?
 }
 
 private struct OverlaySurfaceView: View {
@@ -529,32 +572,36 @@ private struct OverlaySurfaceView: View {
     @ObservedObject var agentMonitorStore: AgentMonitorStore
 
     var body: some View {
-        let radii = NotchWindowController.surfaceRadii(for: model.surfaceState)
-        let horizontalScale = NotchWindowController.surfaceHorizontalScale(
-            for: model.surfaceState,
-            showsNowPlaying: spotifyMusicStore.hasActiveTrack,
-            showsLiveActivity: model.showsLiveActivity
-        )
         let shape = NotchSurfaceShape(
-            bottomRadius: radii.bottom,
-            shoulderRadius: radii.shoulder
+            bottomRadius: model.bottomRadius,
+            shoulderRadius: model.shoulderRadius
         )
 
+        // Note: the visible black notch body is painted natively by
+        // SolidBlackNotchHostingView's CAShapeLayer underneath this view.
+        // We intentionally don't re-paint a SwiftUI black fill here — a
+        // second, independently-animated black shape on top of the native
+        // one is what caused the corner/edge to visibly desync during
+        // transitions (a stray sliver of the "other" radius).
+        //
+        // IMPORTANT: don't wrap this shape's radii in `.animation(...)`.
+        // This view is hosted inside an NSHostingView that is Auto Layout
+        // pinned to the surrounding window; animating a Shape's
+        // `animatableData` here forces SwiftUI to re-run window constraint
+        // updates every animation frame, which can spiral into AppKit's
+        // "too many Update Constraints in Window passes" runaway-loop fault
+        // and leave the notch stuck rendering nothing. Radii / scale / glow
+        // opacity are pushed each tick by `NotchGeometryAnimator` instead.
         ZStack(alignment: .top) {
-            shape
-                .fill(Color(.sRGB, red: 0, green: 0, blue: 0, opacity: 1))
-                .scaleEffect(x: horizontalScale, y: 1, anchor: .center)
-                .animation(.spring(response: 0.36, dampingFraction: 0.82), value: horizontalScale)
             surfaceContent
 
-            if settingsStore.rainbowGlowEnabled,
-               model.surfaceState == .hovered || model.surfaceState == .musicPreview {
+            if settingsStore.rainbowGlowEnabled, model.glowOpacity > 0.01 {
                 RainbowNotchOutline(
-                    bottomRadius: radii.bottom,
-                    shoulderRadius: radii.shoulder
+                    bottomRadius: model.bottomRadius,
+                    shoulderRadius: model.shoulderRadius
                 )
-                .scaleEffect(x: horizontalScale, y: 1, anchor: .center)
-                .animation(.spring(response: 0.36, dampingFraction: 0.82), value: horizontalScale)
+                .scaleEffect(x: model.horizontalScale, y: 1, anchor: .center)
+                .opacity(model.glowOpacity)
             }
         }
         .clipShape(shape)
@@ -588,8 +635,7 @@ private struct OverlaySurfaceView: View {
                         store: spotifyMusicStore,
                         isPreviewExpanded: model.surfaceState == .musicPreview,
                         showsLiveActivity: model.showsLiveActivity,
-                        onOpen: { model.onToggle?() },
-                        onArtworkHover: { model.onMusicArtworkHover?() }
+                        onOpen: { model.onToggle?() }
                     )
                     .transition(.opacity)
                 }
@@ -766,7 +812,6 @@ private struct NowPlayingSurface: View {
     let isPreviewExpanded: Bool
     let showsLiveActivity: Bool
     let onOpen: () -> Void
-    let onArtworkHover: () -> Void
 
     var body: some View {
         GeometryReader { geometry in
@@ -779,12 +824,6 @@ private struct NowPlayingSurface: View {
                     .buttonStyle(.plain)
                     .frame(width: 46)
                     .frame(maxHeight: .infinity)
-                    .onHover { isHovering in
-                        if isHovering { onArtworkHover() }
-                    }
-                    .onContinuousHover { phase in
-                        if case .active = phase { onArtworkHover() }
-                    }
                     .accessibilityLabel("Otwórz pełny notch")
 
                     Button(action: onOpen) {

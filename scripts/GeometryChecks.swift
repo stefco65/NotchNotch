@@ -23,6 +23,12 @@ enum GeometryChecks {
 
         let collapsed = NotchWindowController.frame(for: .collapsed, display: display)
         precondition(collapsed == CGRect(x: 400, y: 974, width: 200, height: 26))
+        // Idle body must use the resolved anchor rect — not a re-centered guess.
+        precondition(
+            DynamicIslandLayout.physicalNotchFrame(display: display) == collapsed
+        )
+        precondition(collapsed.minX == display.anchor.rect.minX)
+        precondition(collapsed.maxX == display.anchor.rect.maxX)
         precondition(NotchWindowController.surfaceRadii(for: .collapsed) == (8, 7))
         precondition(NotchWindowController.surfaceRadii(for: .musicPreview) == (22, 16))
 
@@ -90,29 +96,62 @@ enum GeometryChecks {
         precondition(artworkHoverFrame.contains(CGPoint(x: 377, y: 982)))
         precondition(!artworkHoverFrame.contains(CGPoint(x: 500, y: 982)))
 
-        // Live-activity split: the right pill cuts out of the music envelope,
-        // leaving an asymmetric main notch whose left edge stays put.
-        let splitEnvelope = DynamicIslandLayout.compactEnvelope(
+        // DI: stable left (music collapsed left / physical left), right snapped
+        // to the physical notch maxX. Hover & musicPreview only grow height.
+        let physical = DynamicIslandLayout.physicalNotchFrame(display: display)
+        precondition(physical == collapsed)
+
+        let idleDI = NotchWindowController.frame(
+            for: .collapsed,
+            display: display,
+            showsNowPlaying: false,
+            showsLiveActivity: true
+        )
+        precondition(idleDI == collapsed)
+        precondition(idleDI.maxX == physical.maxX)
+
+        let idleHoverDI = NotchWindowController.frame(
+            for: .hovered,
+            display: display,
+            showsNowPlaying: false,
+            showsLiveActivity: true
+        )
+        precondition(idleHoverDI.minX == idleDI.minX)
+        precondition(idleHoverDI.maxX == physical.maxX)
+        precondition(idleHoverDI.height == idleDI.height + 20)
+
+        let musicDI = NotchWindowController.frame(
             for: .collapsed,
             display: display,
             showsNowPlaying: true,
             showsLiveActivity: true
         )
-        precondition(splitEnvelope == playingCollapsed)
-        let splitMain = NotchWindowController.frame(
-            for: .collapsed,
+        precondition(musicDI.minX == playingCollapsed.minX)
+        precondition(musicDI.maxX == physical.maxX)
+        precondition(musicDI.width == physical.width + DynamicIslandLayout.compactExtraWidth / 2)
+
+        let musicHoverDI = NotchWindowController.frame(
+            for: .hovered,
             display: display,
             showsNowPlaying: true,
             showsLiveActivity: true
         )
-        let bubbleSlot = DynamicIslandLayout.bubbleSlotWidth(surfaceHeight: splitEnvelope.height)
-        precondition(splitMain.minX == splitEnvelope.minX)
-        precondition(splitMain.maxY == splitEnvelope.maxY)
-        precondition(
-            splitMain.width
-                == splitEnvelope.width - DynamicIslandLayout.splitGap - bubbleSlot
+        precondition(musicHoverDI.minX == musicDI.minX)
+        precondition(musicHoverDI.maxX == physical.maxX)
+        precondition(musicHoverDI.width == musicDI.width)
+        precondition(musicHoverDI.height == musicDI.height + 20)
+
+        let musicPreviewDI = NotchWindowController.frame(
+            for: .musicPreview,
+            display: display,
+            showsNowPlaying: true,
+            showsLiveActivity: true
         )
-        precondition(splitMain.midX < display.frame.midX)
+        precondition(musicPreviewDI.minX == musicDI.minX)
+        precondition(musicPreviewDI.maxX == physical.maxX)
+        precondition(musicPreviewDI.width == musicDI.width)
+        precondition(musicPreviewDI.height == musicDI.height + 64)
+
         precondition(
             NotchWindowController.surfaceHorizontalScale(
                 for: .collapsed,
@@ -120,9 +159,11 @@ enum GeometryChecks {
                 showsLiveActivity: true
             ) == 1
         )
-        let bubbleWindow = DynamicIslandLayout.bubbleWindowFrame(envelope: splitEnvelope)
-        precondition(bubbleWindow.maxX >= splitEnvelope.maxX - 1)
-        precondition(bubbleWindow.maxY == splitEnvelope.maxY)
+        let bubbleWindow = DynamicIslandLayout.bubbleWindowFrame(adjacentTo: musicDI)
+        precondition(bubbleWindow.minX == musicDI.maxX - DynamicIslandLayout.attachOverlap)
+        precondition(bubbleWindow.maxY == musicDI.maxY)
+        let idleBubble = DynamicIslandLayout.bubbleWindowFrame(adjacentTo: idleDI)
+        precondition(idleBubble.minX == bubbleWindow.minX)
 
         precondition(
             MarqueeMetrics.offset(

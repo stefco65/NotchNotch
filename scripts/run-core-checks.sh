@@ -8,6 +8,7 @@ cd "$repo_root"
 swiftc \
     NotchApp/Core/Display/DisplayDescriptor.swift \
     NotchApp/Core/Window/NotchPanel.swift \
+    NotchApp/Core/Window/NotchGeometryAnimator.swift \
     NotchApp/Core/Window/SolidBlackNotchHostingView.swift \
     NotchApp/Core/Window/NotchWindowController.swift \
     NotchApp/Core/Input/InteractionZone.swift \
