@@ -196,43 +196,27 @@ final class NotchWindowController: NSWindowController {
         liveActivityCenter.activity != nil && state != .expanded
     }
 
-    /// Parks the dynamic-island bubble against the physical notch's right edge
-    /// when Music+DI is split; otherwise against the compact capsule maxX.
+    /// Parks the DI bubble on the physical cutout — fixed screen position.
     private func updateBubble(activity: LiveActivity?, duration: TimeInterval) {
-        let showsMusic = spotifyMusicStore.hasActiveTrack
-        let envelope = DynamicIslandLayout.compactEnvelope(
-            for: state,
-            display: display,
-            showsNowPlaying: showsMusic,
-            showsLiveActivity: showsLiveActivity
+        let physical = DynamicIslandLayout.physicalNotchFrame(display: display)
+        // Always park against the hardware maxX / resting height so Music hover
+        // and preview never drag the pill around the menu bar.
+        let parkFrame = CGRect(
+            x: physical.minX,
+            y: physical.minY,
+            width: physical.width,
+            height: physical.height
         )
-        var notchFrame = DynamicIslandLayout.mainNotchFrame(
-            envelope: envelope,
-            display: display,
-            showsLiveActivity: showsLiveActivity,
-            showsNowPlaying: showsMusic
-        )
-        // Music+DI drawable extends past physical.maxX by the shoulder so the
-        // vertical wall aligns; the bubble still locks to the hardware maxX.
-        if showsLiveActivity, showsMusic {
-            let physical = DynamicIslandLayout.physicalNotchFrame(display: display)
-            notchFrame = CGRect(
-                x: notchFrame.minX,
-                y: notchFrame.minY,
-                width: max(physical.maxX - notchFrame.minX, 1),
-                height: notchFrame.height
-            )
-        }
         bubbleController?.update(
             activity: activity,
-            notchFrame: notchFrame,
-            restingHeight: max(display.anchor.rect.height, 12),
+            notchFrame: parkFrame,
+            restingHeight: max(physical.height, 12),
             notchWindow: window,
             isNotchExpanded: state == .expanded,
             animationDuration: duration
         )
         physicalGuide?.show(
-            physicalFrame: DynamicIslandLayout.physicalNotchFrame(display: display),
+            physicalFrame: physical,
             relativeTo: window
         )
     }
@@ -349,11 +333,12 @@ final class NotchWindowController: NSWindowController {
     }
 
     static func musicArtworkHoverFrame(in collapsedFrame: CGRect) -> CGRect {
-        CGRect(
+        let slot = NowPlayingLayout.sideSlotWidth
+        return CGRect(
             x: collapsedFrame.minX,
-            y: collapsedFrame.maxY - 34,
-            width: 46,
-            height: 40
+            y: collapsedFrame.maxY - max(slot + 8, 40),
+            width: slot,
+            height: max(slot + 8, 40)
         )
     }
 
@@ -600,9 +585,14 @@ final class NotchWindowController: NSWindowController {
         )
         let drawnWidth = visual.width * scale
         let pinTrailing = showsLiveActivity && showsNowPlaying
-        // Flatten the trailing shoulder when Music+DI so the right wall sits on
-        // the physical cutout instead of curving inward by ~shoulder pt.
-        let trailingShoulder = pinTrailing ? 0 : radii.shoulder
+        let musicStable = showsNowPlaying && state != .expanded
+        let stableShoulder = DynamicIslandLayout.musicStableShoulder
+        // Keep music side shoulders fixed so artwork / playback stay visually
+        // centered in the overhang while the notch only grows downward.
+        let leadingShoulder = musicStable ? stableShoulder : radii.shoulder
+        let trailingShoulder = pinTrailing
+            ? 0
+            : (musicStable ? stableShoulder : radii.shoulder)
         return PresentationMetrics(
             frame: chrome,
             contentWidth: drawnWidth,
@@ -614,7 +604,7 @@ final class NotchWindowController: NSWindowController {
                 pinTrailing: pinTrailing
             ),
             bottomRadius: radii.bottom,
-            shoulderRadius: radii.shoulder,
+            shoulderRadius: leadingShoulder,
             trailingShoulderRadius: trailingShoulder,
             horizontalScale: scale,
             glowOpacity: showsGlow ? 1 : 0
@@ -1154,25 +1144,24 @@ private struct NowPlayingSurface: View {
                     )
                     .clipShape(
                         RoundedRectangle(
-                            cornerRadius: isPreviewExpanded ? 8 : 6,
+                            cornerRadius: isPreviewExpanded ? 10 : 6,
                             style: .continuous
                         )
                     )
                     .overlay {
                         RoundedRectangle(
-                            cornerRadius: isPreviewExpanded ? 8 : 6,
+                            cornerRadius: isPreviewExpanded ? 10 : 6,
                             style: .continuous
                         )
                         .stroke(.white.opacity(0.18), lineWidth: 0.8)
                     }
+                    // Fixed X in the left overhang slot; grows downward from a
+                    // fixed top inset so hover-only height growth never shifts it.
                     .position(
-                        x: NowPlayingLayout.artworkCenterX(
+                        x: NowPlayingLayout.artworkCenterX,
+                        y: NowPlayingLayout.artworkCenterY(
                             isPreviewExpanded: isPreviewExpanded
-                        ),
-                        y: (isPreviewExpanded ? 18 : 2)
-                            + NowPlayingLayout.artworkSize(
-                                isPreviewExpanded: isPreviewExpanded
-                            ) / 2
+                        )
                     )
                     .animation(
                         .spring(response: 0.34, dampingFraction: 0.8),
@@ -1183,13 +1172,11 @@ private struct NowPlayingSurface: View {
                 if !showsLiveActivity {
                     CompactPlaybackIndicator(isPlaying: store.track.isPlaying)
                         .frame(width: 24, height: 24)
+                        // Anchored to the right overhang — position stays put
+                        // while the notch grows down on hover / preview.
                         .position(
                             x: geometry.size.width - NowPlayingLayout.playbackRightInset,
-                            y: 14
-                        )
-                        .animation(
-                            .easeInOut(duration: 0.22),
-                            value: isPreviewExpanded
+                            y: NowPlayingLayout.playbackCenterY
                         )
                         .accessibilityHidden(true)
                         .allowsHitTesting(false)
@@ -1202,14 +1189,16 @@ private struct NowPlayingSurface: View {
                 )
                     .frame(
                         width: max(
-                            geometry.size.width - (isPreviewExpanded ? 44 : 28),
+                            geometry.size.width - NowPlayingLayout.marqueeHorizontalInset * 2,
                             1
                         ),
                         alignment: .leading
                     )
                     .offset(
-                        x: isPreviewExpanded ? 22 : 14,
-                        y: isPreviewExpanded ? 60 : 30
+                        x: NowPlayingLayout.marqueeHorizontalInset,
+                        y: NowPlayingLayout.marqueeTop(
+                            isPreviewExpanded: isPreviewExpanded
+                        )
                     )
                     .opacity(isPreviewExpanded ? 1 : 0)
                     .animation(
@@ -1254,18 +1243,62 @@ private struct NowPlayingSurface: View {
 }
 
 enum NowPlayingLayout {
+    /// Music expands by `compactExtraWidth` centered on the physical notch, so
+    /// each side slot is `compactExtraWidth / 2`.
+    static var sideSlotWidth: CGFloat {
+        DynamicIslandLayout.compactExtraWidth / 2
+    }
+
+    /// Leading shoulder stays at the collapsed music value, so the visible
+    /// left wall is inset by this amount from the rendered frame.
+    static var leadingShoulder: CGFloat {
+        DynamicIslandLayout.musicStableShoulder
+    }
+
+    /// Center of the visible left overhang: between the black body's left wall
+    /// (after the shoulder) and the physical cutout's left edge.
+    static var sideSlotCenterInset: CGFloat {
+        leadingShoulder + (sideSlotWidth - leadingShoulder) / 2
+    }
+
+    static let artworkTopInset: CGFloat = 3
+    static let collapsedArtworkSize: CGFloat = 24
+    /// Slight bump on artwork hover — must stay inside the visible left slot.
+    static let previewArtworkSize: CGFloat = 30
+    static let playbackCenterY: CGFloat = 14
+    /// Full-bleed marquee under the artwork — small inset from both edges.
+    static let marqueeHorizontalInset: CGFloat = 10
+
     static func artworkSize(isPreviewExpanded: Bool) -> CGFloat {
-        isPreviewExpanded ? 28 : 24
+        isPreviewExpanded ? previewArtworkSize : collapsedArtworkSize
     }
 
-    static func artworkCenterX(
-        isPreviewExpanded: Bool
-    ) -> CGFloat {
-        if isPreviewExpanded { return 34 }
-        return 32
+    static var artworkCenterX: CGFloat {
+        sideSlotCenterInset
     }
 
-    static let playbackRightInset: CGFloat = 32
+    static func artworkCenterX(isPreviewExpanded: Bool) -> CGFloat {
+        _ = isPreviewExpanded
+        return artworkCenterX
+    }
+
+    static func artworkCenterY(isPreviewExpanded: Bool) -> CGFloat {
+        artworkTopInset + artworkSize(isPreviewExpanded: isPreviewExpanded) / 2
+    }
+
+    static var playbackRightInset: CGFloat {
+        // Mirror of the left slot center, measured from the trailing edge.
+        // With a flat trailing shoulder (Music+DI) this is sideSlotWidth/2;
+        // with a stable music shoulder it's the same formula from the right.
+        leadingShoulder + (sideSlotWidth - leadingShoulder) / 2
+    }
+
+    /// Marquee sits just under the (possibly expanded) artwork.
+    static func marqueeTop(isPreviewExpanded: Bool) -> CGFloat {
+        artworkTopInset
+            + artworkSize(isPreviewExpanded: isPreviewExpanded)
+            + 8
+    }
 }
 
 private struct MarqueeTrackInfo: View {
@@ -1452,13 +1485,14 @@ private struct NotchGlowEdgeShape: Shape {
     let trailingShoulderRadius: CGFloat
 
     func path(in rect: CGRect) -> Path {
+        // Open path: left side + bottom + right side — never the top edge,
+        // so the rainbow glow doesn't draw along the menu-bar / cutout top.
         Path(
-            NotchSilhouette.path(
+            NotchSilhouette.glowPath(
                 in: rect,
                 bottomRadius: bottomRadius,
                 leadingShoulderRadius: leadingShoulderRadius,
-                trailingShoulderRadius: trailingShoulderRadius,
-                topOriginAtMinY: true
+                trailingShoulderRadius: trailingShoulderRadius
             )
         )
     }
@@ -1540,6 +1574,57 @@ enum NotchSilhouette {
         }
 
         path.closeSubpath()
+        return path
+    }
+
+    /// Rainbow stroke path in SwiftUI coords (top = minY): sides + bottom only.
+    nonisolated static func glowPath(
+        in rect: CGRect,
+        bottomRadius: CGFloat,
+        leadingShoulderRadius: CGFloat,
+        trailingShoulderRadius: CGFloat
+    ) -> CGPath {
+        let leading = min(leadingShoulderRadius, rect.width / 4, rect.height / 2)
+        let trailing = min(trailingShoulderRadius, rect.width / 4, rect.height / 2)
+        let leftEdge = rect.minX + leading
+        let rightEdge = rect.maxX - trailing
+        let lowerRadius = min(
+            bottomRadius,
+            (rightEdge - leftEdge) / 2,
+            max(rect.height - max(leading, trailing), 0)
+        )
+
+        let path = CGMutablePath()
+        // Start at the top-left corner, walk down the left, across the bottom,
+        // and up the right — leave the top edge undrawn.
+        path.move(to: CGPoint(x: rect.minX, y: rect.minY))
+        if leading > 0.05 {
+            path.addCurve(
+                to: CGPoint(x: leftEdge, y: rect.minY + leading),
+                control1: CGPoint(x: rect.minX + leading * 0.25, y: rect.minY),
+                control2: CGPoint(x: leftEdge, y: rect.minY + leading * 0.5)
+            )
+        }
+        path.addLine(to: CGPoint(x: leftEdge, y: rect.maxY - lowerRadius))
+        path.addQuadCurve(
+            to: CGPoint(x: leftEdge + lowerRadius, y: rect.maxY),
+            control: CGPoint(x: leftEdge, y: rect.maxY)
+        )
+        path.addLine(to: CGPoint(x: rightEdge - lowerRadius, y: rect.maxY))
+        path.addQuadCurve(
+            to: CGPoint(x: rightEdge, y: rect.maxY - lowerRadius),
+            control: CGPoint(x: rightEdge, y: rect.maxY)
+        )
+        path.addLine(to: CGPoint(x: rightEdge, y: rect.minY + trailing))
+        if trailing > 0.05 {
+            path.addCurve(
+                to: CGPoint(x: rect.maxX, y: rect.minY),
+                control1: CGPoint(x: rightEdge, y: rect.minY + trailing * 0.5),
+                control2: CGPoint(x: rect.maxX - trailing * 0.25, y: rect.minY)
+            )
+        } else {
+            path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
+        }
         return path
     }
 }

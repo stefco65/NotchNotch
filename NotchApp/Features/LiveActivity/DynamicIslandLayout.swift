@@ -43,8 +43,15 @@ enum DynamicIslandLayout {
         case .hovered:
             return base + 20
         case .musicPreview:
-            return base + 64
+            // Just enough for a slightly larger artwork + marquee under it.
+            return base + 44
         }
+    }
+
+    /// Stable shoulder used for music compact states so artwork / playback
+    /// don't visually drift when hover grows the silhouette.
+    nonisolated static var musicStableShoulder: CGFloat {
+        NotchWindowController.surfaceRadii(for: .collapsed).shoulder
     }
 
     /// Exact resting frame of the physical / virtual notch. Uses the resolved
@@ -167,20 +174,20 @@ enum DynamicIslandLayout {
         return envelope
     }
 
-    /// Bubble window parked against the notch's right shoulder.
-    /// Diameter is locked to the resting (physical) height so hover growth
-    /// only recenters the pill — it must not widen the cut mid-animation.
+    /// Bubble window parked on the physical cutout's right edge. Y/height stay
+    /// locked to the resting notch so hover / preview never move the DI on the bar.
     nonisolated static func bubbleWindowFrame(
         adjacentTo notchFrame: CGRect,
         restingHeight: CGFloat
     ) -> CGRect {
         let diameter = bubbleDiameter(anchorHeight: restingHeight)
+        let height = max(restingHeight, diameter + 4)
         let width = attachOverlap + splitGap + diameter + 48
         return CGRect(
             x: notchFrame.maxX - attachOverlap,
-            y: notchFrame.maxY - max(notchFrame.height, 48),
+            y: notchFrame.maxY - height,
             width: width,
-            height: max(notchFrame.height, 48)
+            height: height
         ).integral
     }
 

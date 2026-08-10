@@ -134,7 +134,7 @@ final class OverlayGeometryTests: XCTestCase {
 
         XCTAssertEqual(preview.maxY, collapsed.maxY)
         XCTAssertEqual(preview.width, 300)
-        XCTAssertEqual(preview.height, 90)
+        XCTAssertEqual(preview.height, 70)
         XCTAssertEqual(preview.width, collapsed.width)
         XCTAssertGreaterThan(preview.height, collapsed.height)
     }
@@ -196,7 +196,7 @@ final class OverlayGeometryTests: XCTestCase {
     }
 
     func testPlaybackControlDoesNotOpenFullNotch() {
-        let panel = CGRect(x: 350, y: 910, width: 300, height: 90)
+        let panel = CGRect(x: 350, y: 930, width: 300, height: 70)
         let playbackControl = CGRect(x: 604, y: 964, width: 46, height: 36)
 
         XCTAssertTrue(

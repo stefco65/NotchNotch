@@ -1,8 +1,8 @@
 import AppKit
 import CoreGraphics
 
-/// Always-on outline of the hardware / virtual notch cutout, drawn in the
-/// notch chrome so compact Music+DI frames can be eyeballed against reality.
+/// Always-on outline of the hardware / virtual notch cutout — development
+/// reference for aligning Music / DI compact frames to the real Mac cutout.
 @MainActor
 final class PhysicalNotchGuideController {
     private let panel: NSPanel
