@@ -198,6 +198,14 @@ enum GeometryChecks {
                 pointerLocation: CGPoint(x: 30, y: 300)
             )
         )
+        precondition(
+            !NotchWindowController.shouldCollapse(
+                state: .expanded,
+                suppressOutsideCollapse: true,
+                panelFrame: expanded,
+                pointerLocation: CGPoint(x: 30, y: 300)
+            )
+        )
 
         let narrowDisplay = DisplayDescriptor(
             id: 2,
@@ -301,8 +309,17 @@ enum GeometryChecks {
         precondition(AgentStatusScanner.cursorState(status: "blocked") == .stopped)
         precondition(AgentStatusScanner.cursorState(status: "none") == .done)
         precondition(AgentStatusScanner.antigravityState(status: 1) == .working)
-        precondition(AgentStatusScanner.antigravityState(status: 7) == .stopped)
+        precondition(AgentStatusScanner.antigravityState(status: 2) == .working)
         precondition(AgentStatusScanner.antigravityState(status: 3) == .done)
+        precondition(AgentStatusScanner.antigravityState(status: 4) == .stopped)
+        precondition(AgentStatusScanner.antigravityState(status: 7) == .stopped)
+        precondition(
+            AgentStatusScanner.antigravityConversationState(lastStatus: 3, hasWorkingStep: true)
+                == .working
+        )
+        precondition(
+            AgentStatusScanner.codexEventState(type: "exec_approval_request") == .stopped
+        )
 
         let taskStore = TaskStore(
             defaults: defaults,

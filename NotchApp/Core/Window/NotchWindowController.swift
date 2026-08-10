@@ -14,6 +14,9 @@ final class NotchWindowController: NSWindowController {
 
     let display: DisplayDescriptor
     var onOpenSettings: (() -> Void)?
+    /// When true (e.g. settings window is frontmost), outside clicks must not
+    /// collapse the expanded notch so the user can preview live changes.
+    var isOutsideCollapseSuppressed: (() -> Bool)?
 
     private let model = OverlayPresentationModel()
     private let settingsStore: SettingsStore
@@ -230,6 +233,7 @@ final class NotchWindowController: NSWindowController {
         if Self.shouldCollapse(
             state: state,
             isTrayMode: model.selectedTab == .tray,
+            suppressOutsideCollapse: isOutsideCollapseSuppressed?() ?? false,
             panelFrame: window.frame,
             pointerLocation: point
         ) {
@@ -251,11 +255,13 @@ final class NotchWindowController: NSWindowController {
     static func shouldCollapse(
         state: SurfaceState,
         isTrayMode: Bool = false,
+        suppressOutsideCollapse: Bool = false,
         panelFrame: CGRect,
         pointerLocation: CGPoint
     ) -> Bool {
         state == .expanded
             && !isTrayMode
+            && !suppressOutsideCollapse
             && !panelFrame.contains(pointerLocation)
     }
 

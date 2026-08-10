@@ -188,6 +188,32 @@ struct AgentStatusScanner: Sendable {
 
     // MARK: State mapping (pure, unit-tested)
 
+    /// Map a Codex rollout event `type` (from `event_msg.payload.type` or the
+    /// top-level `type`) onto our activity buckets.
+    ///
+    /// Blue  = actively running a turn
+    /// Orange = waiting on the user (approval / input / permissions) or aborted
+    /// Green = turn finished successfully
+    static func codexEventState(type: String) -> AgentActivityState? {
+        switch type {
+        case "task_started", "turn_started":
+            return .working
+        case "task_complete", "turn_complete":
+            return .done
+        case "turn_aborted",
+             "exec_approval_request",
+             "apply_patch_approval_request",
+             "request_user_input",
+             "request_permissions",
+             "elicitation_request",
+             "collab_waiting_begin",
+             "error":
+            return .stopped
+        default:
+            return nil
+        }
+    }
+
     static func codexState(
         in rolloutData: Data,
         lastModified: Date? = nil,
@@ -201,27 +227,67 @@ struct AgentStatusScanner: Sendable {
             }
             let type = ((object["payload"] as? [String: Any])?["type"] as? String)
                 ?? (object["type"] as? String)
-            switch type {
-            case "task_started": return .working
-            case "turn_aborted": return .stopped
-            case "task_complete": return .done
-            default: continue
+            if let type, let state = codexEventState(type: type) {
+                return state
             }
         }
+        // Recent write activity with no terminal event in the tail still means
+        // the agent is streaming (tool output, reasoning, …).
         if let lastModified, now.timeIntervalSince(lastModified) <= 90 {
             return .working
         }
         return nil
     }
 
+    /// Signals read from a Cursor `composerData:*` row. Cursor itself treats a
+    /// composer as generating when `status == "generating"` OR
+    /// `generatingBubbleIds` is non-empty (see workbench `isGenerating`);
+    /// relying on `status` alone mis-classifies active runs as aborted/stopped.
+    struct CursorComposerSignals: Equatable, Sendable {
+        var status: String
+        var generatingBubbleCount: Int = 0
+        var isContinuationInProgress: Bool = false
+    }
+
+    /// Map Cursor composer signals to our activity buckets:
+    ///  - working (blue): actively generating / streaming
+    ///  - stopped (orange): waiting for the user (approval, decision, next
+    ///    instruction) or explicitly aborted / blocked
+    ///  - done (green): finished its work successfully
     static func cursorState(status: String) -> AgentActivityState {
-        switch status.lowercased() {
-        case "generating", "running", "in_progress", "in-progress", "processing",
-             "ongoing", "runningwithqueuedresume":
+        cursorState(
+            CursorComposerSignals(status: status)
+        )
+    }
+
+    static func cursorState(_ signals: CursorComposerSignals) -> AgentActivityState {
+        let status = signals.status.lowercased()
+
+        // Match Cursor's own isGenerating check. `generatingBubbleIds` wins
+        // even over a stale `aborted` status — status alone is what caused
+        // working agents to land in the orange bucket.
+        let isGenerating =
+            status == "generating"
+            || status == "running"
+            || status == "runningwithqueuedresume"
+            || status == "in_progress"
+            || status == "in-progress"
+            || status == "processing"
+            || status == "ongoing"
+            || signals.isContinuationInProgress
+            || signals.generatingBubbleCount > 0
+
+        if isGenerating {
             return .working
-        case "blocked", "waiting", "paused", "interrupted", "aborted", "cancelled",
-             "canceled", "error", "failed":
+        }
+
+        switch status {
+        case "aborted", "blocked", "waiting", "paused", "interrupted",
+             "cancelled", "canceled", "error", "failed":
+            // Stopped / needs user attention.
             return .stopped
+        case "completed", "none":
+            return .done
         default:
             return .done
         }
@@ -240,38 +306,41 @@ struct AgentStatusScanner: Sendable {
         return now.timeIntervalSince(lastUpdatedAt) <= recencyWindow
     }
 
-    /// Map a raw Antigravity step status integer to an agent activity state.
-    /// Values observed in real databases:
-    ///   2 = in-progress / generating
-    ///   3 = done / completed
-    ///   7 = stopped / aborted
+    /// Map a raw Antigravity / Jetski `StepStatus` integer.
+    ///
+    /// Observed + SDK (`StepStatus`) alignment:
+    ///   1 / 2 = Active / in-progress          → working (blue)
+    ///   3     = Done                          → done (green)
+    ///   4     = WaitingForUser                → stopped (orange)
+    ///   5 / 6 = Error / Canceled              → stopped (orange)
+    ///   7     = TerminalError / permission    → stopped (orange)
     static func antigravityState(status: Int) -> AgentActivityState {
         switch status {
-        case 2:         return .working
-        case 3:         return .done
-        case 7:         return .stopped
+        case 1, 2:
+            return .working
+        case 3:
+            return .done
+        case 4, 5, 6, 7:
+            return .stopped
         default:
+            // Unknown low values lean working; high values lean done.
             return status < 3 ? .working : .done
         }
     }
 
     /// Derive the overall state of one conversation from its step data.
-    /// Rules:
-    ///  1. The LAST step's status wins for working/done/stopped.
-    ///     (A single intermediate aborted step should not make a finished
-    ///      conversation appear as stopped.)
-    ///  2. If the last step is in-progress but there is also a more-recent
-    ///     finished step, we trust the finished one.
+    ///
+    /// Priority matches the Cursor fix: an in-progress step wins so a stale
+    /// terminal status cannot paint a live agent orange/green. Otherwise the
+    /// last step's status decides (so WaitingForUser / errors stay orange).
     static func antigravityConversationState(
         lastStatus: Int,
         hasWorkingStep: Bool
     ) -> AgentActivityState {
-        // If last step is definitively done or stopped, trust it.
-        if lastStatus == 3 { return .done }
-        if lastStatus == 7 { return .stopped }
-        // Last step is in-progress (2) or unknown.
-        if hasWorkingStep { return .working }
-        return .done
+        if hasWorkingStep || lastStatus == 1 || lastStatus == 2 {
+            return .working
+        }
+        return antigravityState(status: lastStatus)
     }
 
     // MARK: Per-source scans
@@ -302,18 +371,29 @@ struct AgentStatusScanner: Sendable {
         })
 
         var counts = AgentCounts()
+        let now = Date()
         for threadID in threadIDs {
             guard let path = rolloutByID[threadID] else {
-                counts.add(.stopped)
+                // Lock without a rollout row — not enough signal; skip.
                 continue
             }
             let rolloutURL = URL(fileURLWithPath: path)
             let lastModified = try? rolloutURL.resourceValues(forKeys: [.contentModificationDateKey])
                 .contentModificationDate
             guard let data = tailData(of: rolloutURL),
-                  let state = Self.codexState(in: data, lastModified: lastModified) else {
-                counts.add(.stopped)
+                  let state = Self.codexState(in: data, lastModified: lastModified, now: now) else {
+                // No recognized lifecycle event and no recent writes — skip
+                // instead of dumping into orange (the old default that made
+                // idle Codex locks look "stopped").
                 continue
+            }
+            // Same recency rule as Cursor: working always counts; terminal
+            // states only while the rollout was touched recently.
+            if state != .working {
+                guard let lastModified,
+                      now.timeIntervalSince(lastModified) <= Self.recencyWindow else {
+                    continue
+                }
             }
             counts.add(state)
         }
@@ -321,9 +401,13 @@ struct AgentStatusScanner: Sendable {
     }
 
     private func scanCursor() -> AgentCounts {
+        // Pull the same fields Cursor uses for isGenerating, not just status.
+        // json_array_length(NULL) is NULL → COALESCE to 0.
         let sql = """
         SELECT COALESCE(json_extract(k.value, '$.status'), 'none'),
-               COALESCE(json_extract(k.value, '$.lastUpdatedAt'), json_extract(k.value, '$.createdAt'), 0)
+               COALESCE(json_extract(k.value, '$.lastUpdatedAt'), json_extract(k.value, '$.createdAt'), 0),
+               COALESCE(json_array_length(json_extract(k.value, '$.generatingBubbleIds')), 0),
+               COALESCE(json_extract(k.value, '$.isContinuationInProgress'), 0)
         FROM cursorDiskKV k
         LEFT JOIN composerHeaders h ON h.composerId = substr(k.key, 14)
         WHERE k.key LIKE 'composerData:%'
@@ -334,11 +418,15 @@ struct AgentStatusScanner: Sendable {
         var counts = AgentCounts()
         let now = Date()
         for row in SQLiteReadOnly.query(database: paths.cursorStateDatabase, sql: sql) {
-            guard let status = row.first else { continue }
-            let state = Self.cursorState(status: status)
+            guard row.count >= 4 else { continue }
+            let signals = CursorComposerSignals(
+                status: row[0],
+                generatingBubbleCount: Int(row[2]) ?? 0,
+                isContinuationInProgress: row[3] == "1" || row[3] == "true"
+            )
+            let state = Self.cursorState(signals)
             // Timestamps are stored as milliseconds since the Unix epoch.
-            let milliseconds = row.count > 1 ? Double(row[1]) : nil
-            let lastUpdatedAt = milliseconds.flatMap { value -> Date? in
+            let lastUpdatedAt = Double(row[1]).flatMap { value -> Date? in
                 value > 0 ? Date(timeIntervalSince1970: value / 1000) : nil
             }
             guard Self.cursorShouldInclude(state: state, lastUpdatedAt: lastUpdatedAt, now: now) else {
@@ -368,12 +456,12 @@ struct AgentStatusScanner: Sendable {
             guard modified > cutoff else { continue }
 
             // Last step determines the final state; a subquery tells us
-            // whether anything is still in progress. One connection per DB.
+            // whether anything is still Active / in-progress (status 1 or 2).
             let row = SQLiteReadOnly.query(
                 database: url,
                 sql: """
                 SELECT (SELECT status FROM steps ORDER BY idx DESC LIMIT 1),
-                       EXISTS(SELECT 1 FROM steps WHERE status = 2 LIMIT 1);
+                       EXISTS(SELECT 1 FROM steps WHERE status IN (1, 2) LIMIT 1);
                 """
             ).first
             guard let row, row.count == 2, let lastStatus = Int(row[0]) else { continue }

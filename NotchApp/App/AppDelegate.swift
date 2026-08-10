@@ -127,6 +127,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         controller.onOpenSettings = { [weak self] in
             self?.showSettingsWindow()
         }
+        controller.isOutsideCollapseSuppressed = { [weak self] in
+            self?.isSettingsWindowVisible == true
+        }
 
         windowControllers[descriptor.id] = controller
         controller.showCollapsed()
@@ -226,10 +229,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         showSettingsWindow()
     }
 
+    private var isSettingsWindowVisible: Bool {
+        settingsWindowController?.window?.isVisible == true
+    }
+
     private func showSettingsWindow() {
         if settingsWindowController == nil {
             settingsWindowController = SettingsWindowController(store: settingsStore)
         }
+        // Keep the notch expanded while editing so geometry / component
+        // changes are visible immediately.
+        windowControllers.values.forEach { $0.showExpanded() }
         settingsWindowController?.present()
     }
 
