@@ -53,7 +53,7 @@ final class NotchWindowController: NSWindowController {
         self.agentMonitorStore = agentMonitorStore
         self.liveActivityCenter = liveActivityCenter
 
-        let initialFrame = Self.frame(for: .collapsed, display: display)
+        let initialFrame = Self.windowFrame(for: .collapsed, display: display)
         let panel = NotchPanel(
             contentRect: initialFrame,
             styleMask: [.borderless, .nonactivatingPanel],
@@ -83,17 +83,25 @@ final class NotchWindowController: NSWindowController {
             )
         )
         let collapsedRadii = Self.surfaceRadii(for: .collapsed)
+        let initialVisual = Self.frame(for: .collapsed, display: display)
         hostingView.setSurfaceAppearance(
             bottomRadius: collapsedRadii.bottom,
             shoulderRadius: collapsedRadii.shoulder,
-            horizontalScale: 1
+            contentWidth: initialVisual.width,
+            contentHeight: initialVisual.height
         )
         panel.contentView = hostingView
 
         super.init(window: panel)
         surfaceHostView = hostingView
+        let initialChrome = Self.windowFrame(
+            for: .collapsed,
+            display: display
+        )
         let initialMetrics = PresentationMetrics(
-            frame: initialFrame,
+            frame: initialChrome,
+            contentWidth: initialVisual.width,
+            contentHeight: initialVisual.height,
             bottomRadius: collapsedRadii.bottom,
             shoulderRadius: collapsedRadii.shoulder,
             horizontalScale: 1,
@@ -103,11 +111,16 @@ final class NotchWindowController: NSWindowController {
         animator.onApply = { [weak self] metrics in
             self?.applyPresentedMetrics(metrics)
         }
+        animator.onComplete = { [weak self] metrics in
+            self?.handleGeometryAnimationCompleted(metrics)
+        }
         geometryAnimator = animator
         model.bottomRadius = collapsedRadii.bottom
         model.shoulderRadius = collapsedRadii.shoulder
         model.horizontalScale = 1
         model.glowOpacity = 0
+        model.contentWidth = initialVisual.width
+        model.contentHeight = initialVisual.height
         model.onToggle = { [weak self] in self?.toggle() }
         model.onOpenSettings = { [weak self] in self?.onOpenSettings?() }
         spotifyPlaybackCancellable = spotifyMusicStore.$hasActiveTrack
@@ -149,6 +162,11 @@ final class NotchWindowController: NSWindowController {
     func showCollapsed() {
         transition(to: .collapsed)
         window?.orderFrontRegardless()
+        // Attach SwiftUI after several display cycles so AppKit's constraint
+        // flush at launch cannot see an NSHostingView yet.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+            self?.surfaceHostView?.attachHostingWhenReady()
+        }
     }
 
     override func close() {
@@ -204,7 +222,13 @@ final class NotchWindowController: NSWindowController {
         if state != .expanded,
            Self.shouldExpand(
                state: state,
-               panelFrame: window.frame,
+               panelFrame: Self.frame(
+                   for: state,
+                   display: display,
+                   expandedWidth: settingsStore.expandedWidth,
+                   showsNowPlaying: spotifyMusicStore.hasActiveTrack,
+                   showsLiveActivity: showsLiveActivity
+               ),
                excludedControlFrame: playbackControlFrame(in: window.frame),
                pointerLocation: point
            ) {
@@ -373,8 +397,13 @@ final class NotchWindowController: NSWindowController {
         )
 
         state = newState
-        model.surfaceState = newState
-        model.showsLiveActivity = liveActivity
+        let previousSurface = model.surfaceState
+        let openingExpanded = newState == .expanded && previousSurface != .expanded
+        let closingExpanded = previousSurface == .expanded && newState != .expanded
+
+        let surfaceState = newState
+        let liveActivityFlag = liveActivity
+        let swiftUIMetrics = target
 
         let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         let duration = AnimationSpring.windowFrameDuration(
@@ -382,12 +411,124 @@ final class NotchWindowController: NSWindowController {
             reduceMotion: reduceMotion
         )
 
+        if openingExpanded {
+            // Prepare expanded UI immediately but keep it invisible; the shared
+            // CALayer mask grows with the black shell, then we fade content in
+            // over the same duration so components don't outrun the frame.
+            surfaceHostView?.setContentAlpha(0, animated: false)
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.model.surfaceState = surfaceState
+                self.model.showsLiveActivity = liveActivityFlag
+                self.syncSwiftUIMetrics(swiftUIMetrics)
+            }
+            pendingSwiftUIReveal = PendingSwiftUIReveal(
+                surfaceState: surfaceState,
+                showsLiveActivity: liveActivityFlag,
+                metrics: swiftUIMetrics,
+                fadeIn: true,
+                fadeDuration: duration
+            )
+        } else if closingExpanded {
+            // Hide expanded components at once, swap to compact, shrink shell,
+            // then fade compact content back in.
+            surfaceHostView?.setContentAlpha(0, animated: false)
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.model.surfaceState = surfaceState
+                self.model.showsLiveActivity = liveActivityFlag
+                self.syncSwiftUIMetrics(swiftUIMetrics)
+            }
+            pendingSwiftUIReveal = PendingSwiftUIReveal(
+                surfaceState: surfaceState,
+                showsLiveActivity: liveActivityFlag,
+                metrics: swiftUIMetrics,
+                fadeIn: true,
+                fadeDuration: min(0.14, duration)
+            )
+        } else {
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                if self.model.surfaceState != surfaceState {
+                    self.model.surfaceState = surfaceState
+                }
+                if self.model.showsLiveActivity != liveActivityFlag {
+                    self.model.showsLiveActivity = liveActivityFlag
+                }
+                self.syncSwiftUIMetrics(swiftUIMetrics)
+                self.surfaceHostView?.setContentAlpha(1, animated: false)
+            }
+            pendingSwiftUIReveal = nil
+        }
+
         if let animator = geometryAnimator {
             animator.commit(target, duration: duration)
         } else {
             applyPresentedMetrics(target)
+            handleGeometryAnimationCompleted(target)
         }
+
+        if openingExpanded {
+            // Start the fade in parallel with the silhouette morph.
+            surfaceHostView?.setContentAlpha(1, animated: duration > 0, duration: duration)
+            pendingSwiftUIReveal = nil
+        }
+
         updateBubble(activity: liveActivityCenter.activity, duration: duration)
+    }
+
+    private struct PendingSwiftUIReveal {
+        var surfaceState: SurfaceState
+        var showsLiveActivity: Bool
+        var metrics: PresentationMetrics
+        var fadeIn: Bool
+        var fadeDuration: TimeInterval
+    }
+
+    private var pendingSwiftUIReveal: PendingSwiftUIReveal?
+
+    private func handleGeometryAnimationCompleted(_ metrics: PresentationMetrics) {
+        applyPresentedMetrics(metrics)
+        guard let pending = pendingSwiftUIReveal else { return }
+        pendingSwiftUIReveal = nil
+
+        let reveal = pending
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            if self.model.surfaceState != reveal.surfaceState {
+                self.model.surfaceState = reveal.surfaceState
+            }
+            if self.model.showsLiveActivity != reveal.showsLiveActivity {
+                self.model.showsLiveActivity = reveal.showsLiveActivity
+            }
+            self.syncSwiftUIMetrics(reveal.metrics)
+            self.surfaceHostView?.setContentAlpha(
+                1,
+                animated: reveal.fadeIn && reveal.fadeDuration > 0,
+                duration: reveal.fadeDuration
+            )
+        }
+    }
+
+    private func syncSwiftUIMetrics(_ metrics: PresentationMetrics) {
+        if abs(model.bottomRadius - metrics.bottomRadius) > 0.05 {
+            model.bottomRadius = metrics.bottomRadius
+        }
+        if abs(model.shoulderRadius - metrics.shoulderRadius) > 0.05 {
+            model.shoulderRadius = metrics.shoulderRadius
+        }
+        if abs(model.horizontalScale - metrics.horizontalScale) > 0.01 {
+            model.horizontalScale = metrics.horizontalScale
+        }
+        if abs(model.glowOpacity - metrics.glowOpacity) > 0.05 {
+            model.glowOpacity = metrics.glowOpacity
+        }
+        if abs(model.contentWidth - metrics.contentWidth) > 0.5 {
+            model.contentWidth = metrics.contentWidth
+        }
+        if abs(model.contentHeight - metrics.contentHeight) > 0.5 {
+            model.contentHeight = metrics.contentHeight
+        }
     }
 
     private func presentationMetrics(
@@ -397,21 +538,31 @@ final class NotchWindowController: NSWindowController {
     ) -> PresentationMetrics {
         let radii = Self.surfaceRadii(for: state)
         let showsGlow = state == .hovered || state == .musicPreview
+        let visual = Self.frame(
+            for: state,
+            display: display,
+            expandedWidth: settingsStore.expandedWidth,
+            showsNowPlaying: showsNowPlaying,
+            showsLiveActivity: showsLiveActivity
+        )
+        let scale = Self.surfaceHorizontalScale(
+            for: state,
+            showsNowPlaying: showsNowPlaying,
+            showsLiveActivity: showsLiveActivity
+        )
         return PresentationMetrics(
-            frame: Self.frame(
+            frame: Self.windowFrame(
                 for: state,
                 display: display,
                 expandedWidth: settingsStore.expandedWidth,
                 showsNowPlaying: showsNowPlaying,
                 showsLiveActivity: showsLiveActivity
             ),
+            contentWidth: visual.width * scale,
+            contentHeight: visual.height,
             bottomRadius: radii.bottom,
             shoulderRadius: radii.shoulder,
-            horizontalScale: Self.surfaceHorizontalScale(
-                for: state,
-                showsNowPlaying: showsNowPlaying,
-                showsLiveActivity: showsLiveActivity
-            ),
+            horizontalScale: scale,
             glowOpacity: showsGlow ? 1 : 0
         )
     }
@@ -419,23 +570,56 @@ final class NotchWindowController: NSWindowController {
     private func applyPresentedMetrics(_ metrics: PresentationMetrics) {
         guard let window else { return }
 
-        // Direct setFrame (no NSAnimationContext) — the geometry animator is
-        // already the timeline. Skipping unchanged frames avoids AppKit's
-        // "too many Update Constraints in Window" runaway.
-        if window.frame != metrics.frame {
-            window.setFrame(metrics.frame, display: true)
+        // Window chrome is normally stable (expanded size). Prefer skipping
+        // setFrame entirely — even a no-op-ish resize re-enters constraint
+        // updates when any NSHostingView is (or was) in the hierarchy.
+        if !framesEqual(window.frame, metrics.frame) {
+            surfaceHostView?.detachHostingForResize()
+            NSAnimationContext.beginGrouping()
+            NSAnimationContext.current.duration = 0
+            NSAnimationContext.current.allowsImplicitAnimation = false
+            window.setFrame(metrics.frame, display: false)
+            NSAnimationContext.endGrouping()
+            surfaceHostView?.attachHostingAfterResize()
         }
 
         surfaceHostView?.setSurfaceAppearance(
             bottomRadius: metrics.bottomRadius,
             shoulderRadius: metrics.shoulderRadius,
-            horizontalScale: metrics.horizontalScale
+            contentWidth: metrics.contentWidth,
+            contentHeight: metrics.contentHeight
         )
+        // SwiftUI metrics are synced once per transition in commitPresentation.
+        // Do not publish per-tick sizes/radii here.
+    }
 
-        model.bottomRadius = metrics.bottomRadius
-        model.shoulderRadius = metrics.shoulderRadius
-        model.horizontalScale = metrics.horizontalScale
-        model.glowOpacity = metrics.glowOpacity
+    private func framesEqual(_ lhs: CGRect, _ rhs: CGRect) -> Bool {
+        abs(lhs.origin.x - rhs.origin.x) < 0.05
+            && abs(lhs.origin.y - rhs.origin.y) < 0.05
+            && abs(lhs.size.width - rhs.size.width) < 0.05
+            && abs(lhs.size.height - rhs.size.height) < 0.05
+    }
+
+    /// Window chrome for a state. Always uses the expanded rect so compact
+    /// hover / click-to-open never resize the NSWindow. Resizing a SwiftUI
+    /// hosting surface on macOS 26 fatally re-enters Update Constraints.
+    static func windowFrame(
+        for state: SurfaceState,
+        display: DisplayDescriptor,
+        expandedWidth: Double = 760,
+        showsNowPlaying: Bool = false,
+        showsLiveActivity: Bool = false
+    ) -> CGRect {
+        _ = state
+        _ = showsNowPlaying
+        _ = showsLiveActivity
+        return frame(
+            for: .expanded,
+            display: display,
+            expandedWidth: expandedWidth,
+            showsNowPlaying: false,
+            showsLiveActivity: false
+        )
     }
 
     static func frame(
@@ -558,6 +742,9 @@ private final class OverlayPresentationModel: ObservableObject {
     @Published var shoulderRadius: CGFloat = 7
     @Published var horizontalScale: CGFloat = 1
     @Published var glowOpacity: CGFloat = 0
+    /// Drawn compact silhouette size inside the always-expanded window chrome.
+    @Published var contentWidth: CGFloat = 120
+    @Published var contentHeight: CGFloat = 32
     var onToggle: (() -> Void)?
     var onOpenSettings: (() -> Void)?
 }
@@ -577,21 +764,37 @@ private struct OverlaySurfaceView: View {
             shoulderRadius: model.shoulderRadius
         )
 
-        // Note: the visible black notch body is painted natively by
-        // SolidBlackNotchHostingView's CAShapeLayer underneath this view.
-        // We intentionally don't re-paint a SwiftUI black fill here — a
-        // second, independently-animated black shape on top of the native
-        // one is what caused the corner/edge to visibly desync during
-        // transitions (a stray sliver of the "other" radius).
-        //
-        // IMPORTANT: don't wrap this shape's radii in `.animation(...)`.
-        // This view is hosted inside an NSHostingView that is Auto Layout
-        // pinned to the surrounding window; animating a Shape's
-        // `animatableData` here forces SwiftUI to re-run window constraint
-        // updates every animation frame, which can spiral into AppKit's
-        // "too many Update Constraints in Window passes" runaway-loop fault
-        // and leave the notch stuck rendering nothing. Radii / scale / glow
-        // opacity are pushed each tick by `NotchGeometryAnimator` instead.
+        // Window chrome stays at expanded size; compact UI is laid out in a
+        // top-centered content rect so click-to-expand never resizes NSHosting*.
+        Group {
+            if model.surfaceState == .expanded {
+                expandedChrome(shape: shape)
+            } else {
+                compactChrome(shape: shape)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .ignoresSafeArea()
+    }
+
+    private func expandedChrome(shape: NotchSurfaceShape) -> some View {
+        ZStack(alignment: .top) {
+            surfaceContent
+            if settingsStore.rainbowGlowEnabled, model.glowOpacity > 0.01 {
+                RainbowNotchOutline(
+                    bottomRadius: model.bottomRadius,
+                    shoulderRadius: model.shoulderRadius
+                )
+                .opacity(model.glowOpacity)
+            }
+        }
+        .clipShape(shape)
+        .contentShape(shape)
+    }
+
+    private func compactChrome(shape: NotchSurfaceShape) -> some View {
+        // Layout snaps to the transition target; CALayer mask morphs the
+        // visible silhouette. Avoid clipShape/size animation driven each tick.
         ZStack(alignment: .top) {
             surfaceContent
 
@@ -604,18 +807,18 @@ private struct OverlaySurfaceView: View {
                 .opacity(model.glowOpacity)
             }
         }
-        .clipShape(shape)
+        .frame(
+            width: max(model.contentWidth, 1),
+            height: max(model.contentHeight, 1)
+        )
         .contentShape(shape)
         .gesture(
             TapGesture().onEnded {
-                guard model.surfaceState != .expanded else { return }
                 model.onToggle?()
             },
-            including: model.surfaceState == .expanded || usesMusicTapZones
-                ? .subviews
-                : .all
+            including: usesMusicTapZones ? .subviews : .all
         )
-        .ignoresSafeArea()
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
     private var usesMusicTapZones: Bool {
@@ -637,13 +840,8 @@ private struct OverlaySurfaceView: View {
                         showsLiveActivity: model.showsLiveActivity,
                         onOpen: { model.onToggle?() }
                     )
-                    .transition(.opacity)
                 }
             }
-            .animation(
-                .spring(response: 0.38, dampingFraction: 0.85),
-                value: spotifyMusicStore.hasActiveTrack
-            )
         }
     }
 

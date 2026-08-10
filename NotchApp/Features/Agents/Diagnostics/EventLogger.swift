@@ -14,6 +14,11 @@ enum AgentEventLogger {
 
     static func error(_ message: String) {
         logger.error("\(message, privacy: .public)")
+        AppErrorLog.record(
+            severity: .error,
+            category: "agents",
+            message: message
+        )
     }
 }
 

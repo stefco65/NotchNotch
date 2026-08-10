@@ -33,6 +33,11 @@ final class TrayStore: ObservableObject {
                     try storage.persist(items)
                 } catch {
                     lastError = "Nie udało się dodać \(url.lastPathComponent)."
+                    AppErrorLog.record(
+                        error,
+                        category: "tray",
+                        message: "Tray ingest failed for \(url.lastPathComponent)"
+                    )
                     logger.error("Tray ingest failed: \(error.localizedDescription, privacy: .public)")
                 }
             }
@@ -47,6 +52,11 @@ final class TrayStore: ObservableObject {
             try storage.persist(items)
         } catch {
             lastError = "Nie udało się usunąć \(item.displayName)."
+            AppErrorLog.record(
+                error,
+                category: "tray",
+                message: "Tray removal failed for \(item.displayName)"
+            )
             logger.error("Tray removal failed: \(error.localizedDescription, privacy: .public)")
         }
     }
