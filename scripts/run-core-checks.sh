@@ -13,6 +13,7 @@ swiftc \
     NotchApp/Core/Window/NotchPanel.swift \
     NotchApp/Core/Window/NotchGeometryAnimator.swift \
     NotchApp/Core/Window/PassiveHostingView.swift \
+    NotchApp/Core/Window/PhysicalNotchGuideController.swift \
     NotchApp/Core/Window/SolidBlackNotchHostingView.swift \
     NotchApp/Core/Window/NotchWindowController.swift \
     NotchApp/Core/Input/InteractionZone.swift \

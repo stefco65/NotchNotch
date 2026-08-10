@@ -19,6 +19,7 @@ final class SolidBlackNotchHostingView<Content: View>: NSView {
     private let contentMaskLayer = CAShapeLayer()
     private var bottomRadius: CGFloat = 8
     private var shoulderRadius: CGFloat = 7
+    private var trailingShoulderRadius: CGFloat = 7
     private var contentWidth: CGFloat = 0
     private var contentHeight: CGFloat = 0
     private var contentOffsetX: CGFloat = 0
@@ -122,6 +123,7 @@ final class SolidBlackNotchHostingView<Content: View>: NSView {
     func setSurfaceAppearance(
         bottomRadius: CGFloat,
         shoulderRadius: CGFloat,
+        trailingShoulderRadius: CGFloat? = nil,
         contentWidth: CGFloat,
         contentHeight: CGFloat,
         contentOffsetX: CGFloat = 0,
@@ -135,8 +137,10 @@ final class SolidBlackNotchHostingView<Content: View>: NSView {
 
         let width = max(contentWidth, 1)
         let height = max(contentHeight, 1)
+        let trailing = trailingShoulderRadius ?? shoulderRadius
         let radiiChanged = self.bottomRadius != bottomRadius
             || self.shoulderRadius != shoulderRadius
+            || self.trailingShoulderRadius != trailing
         let sizeChanged = abs(self.contentWidth - width) > 0.05
             || abs(self.contentHeight - height) > 0.05
             || abs(self.contentOffsetX - contentOffsetX) > 0.05
@@ -145,6 +149,7 @@ final class SolidBlackNotchHostingView<Content: View>: NSView {
 
         self.bottomRadius = bottomRadius
         self.shoulderRadius = shoulderRadius
+        self.trailingShoulderRadius = trailing
         self.contentWidth = width
         self.contentHeight = height
         self.contentOffsetX = contentOffsetX
@@ -181,10 +186,12 @@ final class SolidBlackNotchHostingView<Content: View>: NSView {
             width: width,
             height: height
         )
-        let path = Self.surfacePath(
+        let path = NotchSilhouette.path(
             in: rect,
             bottomRadius: bottomRadius,
-            shoulderRadius: shoulderRadius
+            leadingShoulderRadius: shoulderRadius,
+            trailingShoulderRadius: trailingShoulderRadius,
+            topOriginAtMinY: false
         )
 
         CATransaction.begin()
@@ -232,49 +239,5 @@ final class SolidBlackNotchHostingView<Content: View>: NSView {
             ?? 2
         solidBlackLayer.contentsScale = scale
         contentMaskLayer.contentsScale = scale
-    }
-
-    /// Notch silhouette: flat top edge flush with the window top, concave
-    /// shoulders into the menu bar, rounded bottom corners.
-    private static func surfacePath(
-        in rect: CGRect,
-        bottomRadius: CGFloat,
-        shoulderRadius: CGFloat
-    ) -> CGPath {
-        let shoulder = min(shoulderRadius, rect.width / 4, rect.height / 2)
-        let leftEdge = rect.minX + shoulder
-        let rightEdge = rect.maxX - shoulder
-        let lowerRadius = min(
-            bottomRadius,
-            (rightEdge - leftEdge) / 2,
-            max(rect.height - shoulder, 0)
-        )
-
-        let path = CGMutablePath()
-        path.move(to: CGPoint(x: rect.minX, y: rect.maxY))
-        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
-        path.addCurve(
-            to: CGPoint(x: rightEdge, y: rect.maxY - shoulder),
-            control1: CGPoint(x: rect.maxX - shoulder * 0.25, y: rect.maxY),
-            control2: CGPoint(x: rightEdge, y: rect.maxY - shoulder * 0.5)
-        )
-        path.addLine(to: CGPoint(x: rightEdge, y: rect.minY + lowerRadius))
-        path.addQuadCurve(
-            to: CGPoint(x: rightEdge - lowerRadius, y: rect.minY),
-            control: CGPoint(x: rightEdge, y: rect.minY)
-        )
-        path.addLine(to: CGPoint(x: leftEdge + lowerRadius, y: rect.minY))
-        path.addQuadCurve(
-            to: CGPoint(x: leftEdge, y: rect.minY + lowerRadius),
-            control: CGPoint(x: leftEdge, y: rect.minY)
-        )
-        path.addLine(to: CGPoint(x: leftEdge, y: rect.maxY - shoulder))
-        path.addCurve(
-            to: CGPoint(x: rect.minX, y: rect.maxY),
-            control1: CGPoint(x: leftEdge, y: rect.maxY - shoulder * 0.5),
-            control2: CGPoint(x: rect.minX + shoulder * 0.25, y: rect.maxY)
-        )
-        path.closeSubpath()
-        return path
     }
 }

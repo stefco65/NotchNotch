@@ -5,8 +5,9 @@ import Foundation
 ///
 /// The idle notch always matches `display.anchor.rect` (the real hardware /
 /// virtual cutout). Music and hover expand symmetrically around that anchor's
-/// midX. Live Activity does **not** clip the notch — the bubble detaches to
-/// the right of the capsule's maxX (with a small attach overlap).
+/// midX — except Music + Live Activity, where the left edge keeps the music
+/// capsule overhang and the right edge snaps to the physical notch's maxX so
+/// the DI bubble can detach from the hardware cutout.
 enum DynamicIslandLayout {
     nonisolated static let compactExtraWidth: CGFloat = 100
     /// Idle hover growth on a ~220pt hardware notch (~+36%) so the slide-out
@@ -96,19 +97,40 @@ enum DynamicIslandLayout {
         ).integral
     }
 
-    /// Compact visual frame. Live Activity never clips this rect — the bubble
-    /// hangs off `maxX` so the black body stays centered on the hardware notch.
+    /// Compact visual frame.
+    ///
+    /// - Without DI: centered capsule on the physical notch.
+    /// - Idle + DI: same centered capsule; bubble hangs past `maxX`.
+    /// - Music + DI: left keeps the music overhang, right snaps to
+    ///   `physical.maxX`. The trailing shoulder is flattened so the visible
+    ///   right wall sits on the hardware cutout (DI parks there).
     nonisolated static func compactEnvelope(
         for state: NotchWindowController.SurfaceState,
         display: DisplayDescriptor,
         showsNowPlaying: Bool,
         showsLiveActivity: Bool
     ) -> CGRect {
-        _ = showsLiveActivity
-        return centeredCapsule(
-            for: state,
+        guard showsLiveActivity, showsNowPlaying else {
+            return centeredCapsule(
+                for: state,
+                display: display,
+                showsNowPlaying: showsNowPlaying
+            )
+        }
+
+        let physical = physicalNotchFrame(display: display)
+        let height = compactHeight(for: state, display: display)
+        let musicLeft = centeredCapsule(
+            for: .collapsed,
             display: display,
-            showsNowPlaying: showsNowPlaying
+            showsNowPlaying: true
+        ).minX
+
+        return snapRightEdge(
+            left: musicLeft,
+            right: physical.maxX,
+            y: display.frame.maxY - height,
+            height: height
         )
     }
 

@@ -15,6 +15,9 @@ struct PresentationMetrics: Equatable {
     var contentOffsetX: CGFloat
     var bottomRadius: CGFloat
     var shoulderRadius: CGFloat
+    /// Trailing (right) shoulder. Music+DI flattens this to 0 so the right
+    /// wall sits on `physical.maxX` instead of being pulled inward.
+    var trailingShoulderRadius: CGFloat
     var horizontalScale: CGFloat
     var glowOpacity: CGFloat
 }
@@ -126,6 +129,11 @@ final class NotchGeometryAnimator {
             contentOffsetX: lerp(from.contentOffsetX, to.contentOffsetX, progress),
             bottomRadius: lerp(from.bottomRadius, to.bottomRadius, progress),
             shoulderRadius: lerp(from.shoulderRadius, to.shoulderRadius, progress),
+            trailingShoulderRadius: lerp(
+                from.trailingShoulderRadius,
+                to.trailingShoulderRadius,
+                progress
+            ),
             horizontalScale: lerp(from.horizontalScale, to.horizontalScale, progress),
             glowOpacity: lerp(from.glowOpacity, to.glowOpacity, progress)
         )

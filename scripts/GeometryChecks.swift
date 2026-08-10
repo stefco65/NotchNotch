@@ -97,8 +97,8 @@ enum GeometryChecks {
         precondition(artworkHoverFrame.contains(CGPoint(x: 377, y: 982)))
         precondition(!artworkHoverFrame.contains(CGPoint(x: 500, y: 982)))
 
-        // DI: same centered capsule as without DI — bubble detaches past maxX.
-        // Hover / musicPreview keep full sideways growth (no physical.maxX clip).
+        // Idle + DI: same centered capsule; bubble hangs past physical maxX.
+        // Music + DI: keep music left overhang, clip right edge to physical.maxX.
         let physical = DynamicIslandLayout.physicalNotchFrame(display: display)
         precondition(physical == collapsed)
 
@@ -127,8 +127,9 @@ enum GeometryChecks {
             showsNowPlaying: true,
             showsLiveActivity: true
         )
-        precondition(musicDI == playingCollapsed)
-        precondition(musicDI.midX == physical.midX)
+        precondition(musicDI.minX == playingCollapsed.minX)
+        precondition(musicDI.maxX == physical.maxX)
+        precondition(musicDI.width == physical.width + DynamicIslandLayout.compactExtraWidth / 2)
 
         let musicHoverDI = NotchWindowController.frame(
             for: .hovered,
@@ -136,7 +137,8 @@ enum GeometryChecks {
             showsNowPlaying: true,
             showsLiveActivity: true
         )
-        precondition(musicHoverDI == musicHovered)
+        precondition(musicHoverDI.maxX == physical.maxX)
+        precondition(musicHoverDI.minX == musicDI.minX)
         precondition(musicHoverDI.width == musicDI.width)
         precondition(musicHoverDI.height == musicDI.height + 20)
 
@@ -146,9 +148,17 @@ enum GeometryChecks {
             showsNowPlaying: true,
             showsLiveActivity: true
         )
-        precondition(musicPreviewDI == musicPreview)
+        precondition(musicPreviewDI.maxX == physical.maxX)
+        precondition(musicPreviewDI.minX == musicDI.minX)
         precondition(musicPreviewDI.width == musicDI.width)
         precondition(musicPreviewDI.height == musicDI.height + 64)
+
+        // Hover bubble stays pinned to the physical cutout.
+        let musicHoverBubble = DynamicIslandLayout.bubbleWindowFrame(
+            adjacentTo: musicHoverDI,
+            restingHeight: physical.height
+        )
+        precondition(musicHoverBubble.minX == physical.maxX - DynamicIslandLayout.attachOverlap)
 
         precondition(
             NotchWindowController.surfaceHorizontalScale(
@@ -162,14 +172,14 @@ enum GeometryChecks {
             restingHeight: physical.height
         )
         precondition(bubbleWindow.minX == musicDI.maxX - DynamicIslandLayout.attachOverlap)
+        precondition(bubbleWindow.minX == physical.maxX - DynamicIslandLayout.attachOverlap)
         precondition(bubbleWindow.maxY == musicDI.maxY)
         let idleBubble = DynamicIslandLayout.bubbleWindowFrame(
             adjacentTo: idleDI,
             restingHeight: physical.height
         )
         precondition(idleBubble.minX == idleDI.maxX - DynamicIslandLayout.attachOverlap)
-        // Music capsule is wider, so its bubble rides further right.
-        precondition(bubbleWindow.minX > idleBubble.minX)
+        precondition(bubbleWindow.minX == idleBubble.minX)
 
         let chrome = NotchWindowController.windowFrame(for: .collapsed, display: display)
         let offset = NotchWindowController.contentOffsetX(
@@ -178,6 +188,21 @@ enum GeometryChecks {
             chrome: chrome
         )
         precondition(abs((chrome.minX + offset + collapsed.width / 2) - collapsed.midX) < 0.5)
+        let musicDIOffset = NotchWindowController.contentOffsetX(
+            visual: musicDI,
+            contentWidth: musicDI.width,
+            chrome: chrome,
+            pinTrailing: true
+        )
+        precondition(abs((chrome.minX + musicDIOffset + musicDI.width) - physical.maxX) < 0.5)
+        precondition(abs((chrome.minX + musicDIOffset) - musicDI.minX) < 0.5)
+        let musicHoverOffset = NotchWindowController.contentOffsetX(
+            visual: musicHoverDI,
+            contentWidth: musicHoverDI.width,
+            chrome: chrome,
+            pinTrailing: true
+        )
+        precondition(musicHoverOffset == musicDIOffset)
 
         precondition(
             MarqueeMetrics.offset(
