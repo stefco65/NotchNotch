@@ -595,7 +595,7 @@ Każdy stan notcha jest zakotwiczony tak, aby:
 - `frame.midX == display.frame.midX`,
 - `frame.maxY == display.frame.maxY`.
 
-Oznacza to rozszerzanie symetryczne na boki i wyłącznie w dół. Live Activity **nie** przesuwa ani nie ucina notcha — bubble odłącza się na prawo od stałego `maxX`.
+Oznacza to rozszerzanie symetryczne na boki i wyłącznie w dół. Wyjątek: **Music + Live Activity** — lewa krawędź zostaje na overhangu kapsuły muzycznej, prawa jest przycinana do `physical.maxX`, a bubble DI dokleja się do tego cutoutu.
 
 Geometrię napędza jeden `NotchGeometryAnimator` (`PresentationMetrics`: frame, radii, horizontalScale, glowOpacity). Nie wolno równolegle animować `NSWindow.animator()`, niezależnego springa na `CAShapeLayer` i SwiftUI shape.
 
@@ -608,7 +608,7 @@ Geometrię napędza jeden `NotchGeometryAnimator` (`PresentationMetrics`: frame,
 
 Frame docelowy jest całkowany przez `.integral`; klatki pośrednie animacji mogą być połówkowe.
 
-Live Activity **nie** ucina kapsuły — `compactEnvelope` jest tą samą wycentrowaną geometrią co bez DI, a bubble dokleja się do `maxX` z overlapem.
+Music + Live Activity ucina prawą krawędź kapsuły do `physical.maxX` (lewy overhang muzyki zostaje); sam idle/hover z DI pozostaje wycentrowany, a bubble dokleja się do `maxX` z overlapem.
 
 ## 17. Najważniejsze zależności i przepływy danych
 

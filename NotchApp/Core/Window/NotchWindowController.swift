@@ -31,6 +31,7 @@ final class NotchWindowController: NSWindowController {
     private var liveActivityCancellable: AnyCancellable?
     private var surfaceHostView: SolidBlackNotchHostingView<OverlaySurfaceView>?
     private var bubbleController: DynamicIslandBubbleController?
+    private var physicalGuide: PhysicalNotchGuideController?
     private var geometryAnimator: NotchGeometryAnimator?
     private(set) var state: SurfaceState = .collapsed
 
@@ -96,6 +97,7 @@ final class NotchWindowController: NSWindowController {
         hostingView.setSurfaceAppearance(
             bottomRadius: collapsedRadii.bottom,
             shoulderRadius: collapsedRadii.shoulder,
+            trailingShoulderRadius: collapsedRadii.shoulder,
             contentWidth: initialVisual.width,
             contentHeight: initialVisual.height,
             contentOffsetX: initialOffsetX
@@ -111,6 +113,7 @@ final class NotchWindowController: NSWindowController {
             contentOffsetX: initialOffsetX,
             bottomRadius: collapsedRadii.bottom,
             shoulderRadius: collapsedRadii.shoulder,
+            trailingShoulderRadius: collapsedRadii.shoulder,
             horizontalScale: 1,
             glowOpacity: 0
         )
@@ -124,6 +127,7 @@ final class NotchWindowController: NSWindowController {
         geometryAnimator = animator
         model.bottomRadius = collapsedRadii.bottom
         model.shoulderRadius = collapsedRadii.shoulder
+        model.trailingShoulderRadius = collapsedRadii.shoulder
         model.horizontalScale = 1
         model.glowOpacity = 0
         model.contentWidth = initialVisual.width
@@ -149,6 +153,7 @@ final class NotchWindowController: NSWindowController {
         bubbleController = DynamicIslandBubbleController(
             anchorHeight: display.anchor.rect.height
         )
+        physicalGuide = PhysicalNotchGuideController()
         liveActivityCancellable = liveActivityCenter.$activity
             .removeDuplicates()
             .dropFirst()
@@ -170,6 +175,10 @@ final class NotchWindowController: NSWindowController {
     func showCollapsed() {
         transition(to: .collapsed)
         window?.orderFrontRegardless()
+        physicalGuide?.show(
+            physicalFrame: DynamicIslandLayout.physicalNotchFrame(display: display),
+            relativeTo: window
+        )
         // Attach SwiftUI after several display cycles so AppKit's constraint
         // flush at launch cannot see an NSHostingView yet.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
@@ -178,6 +187,7 @@ final class NotchWindowController: NSWindowController {
     }
 
     override func close() {
+        physicalGuide?.close()
         bubbleController?.close()
         super.close()
     }
@@ -186,20 +196,33 @@ final class NotchWindowController: NSWindowController {
         liveActivityCenter.activity != nil && state != .expanded
     }
 
-    /// Parks the dynamic-island bubble against the shortened notch's right edge.
+    /// Parks the dynamic-island bubble against the physical notch's right edge
+    /// when Music+DI is split; otherwise against the compact capsule maxX.
     private func updateBubble(activity: LiveActivity?, duration: TimeInterval) {
+        let showsMusic = spotifyMusicStore.hasActiveTrack
         let envelope = DynamicIslandLayout.compactEnvelope(
             for: state,
             display: display,
-            showsNowPlaying: spotifyMusicStore.hasActiveTrack,
+            showsNowPlaying: showsMusic,
             showsLiveActivity: showsLiveActivity
         )
-        let notchFrame = DynamicIslandLayout.mainNotchFrame(
+        var notchFrame = DynamicIslandLayout.mainNotchFrame(
             envelope: envelope,
             display: display,
             showsLiveActivity: showsLiveActivity,
-            showsNowPlaying: spotifyMusicStore.hasActiveTrack
+            showsNowPlaying: showsMusic
         )
+        // Music+DI drawable extends past physical.maxX by the shoulder so the
+        // vertical wall aligns; the bubble still locks to the hardware maxX.
+        if showsLiveActivity, showsMusic {
+            let physical = DynamicIslandLayout.physicalNotchFrame(display: display)
+            notchFrame = CGRect(
+                x: notchFrame.minX,
+                y: notchFrame.minY,
+                width: max(physical.maxX - notchFrame.minX, 1),
+                height: notchFrame.height
+            )
+        }
         bubbleController?.update(
             activity: activity,
             notchFrame: notchFrame,
@@ -207,6 +230,10 @@ final class NotchWindowController: NSWindowController {
             notchWindow: window,
             isNotchExpanded: state == .expanded,
             animationDuration: duration
+        )
+        physicalGuide?.show(
+            physicalFrame: DynamicIslandLayout.physicalNotchFrame(display: display),
+            relativeTo: window
         )
     }
 
@@ -525,6 +552,9 @@ final class NotchWindowController: NSWindowController {
         if abs(model.shoulderRadius - metrics.shoulderRadius) > 0.05 {
             model.shoulderRadius = metrics.shoulderRadius
         }
+        if abs(model.trailingShoulderRadius - metrics.trailingShoulderRadius) > 0.05 {
+            model.trailingShoulderRadius = metrics.trailingShoulderRadius
+        }
         if abs(model.horizontalScale - metrics.horizontalScale) > 0.01 {
             model.horizontalScale = metrics.horizontalScale
         }
@@ -569,6 +599,10 @@ final class NotchWindowController: NSWindowController {
             showsLiveActivity: showsLiveActivity
         )
         let drawnWidth = visual.width * scale
+        let pinTrailing = showsLiveActivity && showsNowPlaying
+        // Flatten the trailing shoulder when Music+DI so the right wall sits on
+        // the physical cutout instead of curving inward by ~shoulder pt.
+        let trailingShoulder = pinTrailing ? 0 : radii.shoulder
         return PresentationMetrics(
             frame: chrome,
             contentWidth: drawnWidth,
@@ -576,10 +610,12 @@ final class NotchWindowController: NSWindowController {
             contentOffsetX: Self.contentOffsetX(
                 visual: visual,
                 contentWidth: drawnWidth,
-                chrome: chrome
+                chrome: chrome,
+                pinTrailing: pinTrailing
             ),
             bottomRadius: radii.bottom,
             shoulderRadius: radii.shoulder,
+            trailingShoulderRadius: trailingShoulder,
             horizontalScale: scale,
             glowOpacity: showsGlow ? 1 : 0
         )
@@ -604,6 +640,7 @@ final class NotchWindowController: NSWindowController {
         surfaceHostView?.setSurfaceAppearance(
             bottomRadius: metrics.bottomRadius,
             shoulderRadius: metrics.shoulderRadius,
+            trailingShoulderRadius: metrics.trailingShoulderRadius,
             contentWidth: metrics.contentWidth,
             contentHeight: metrics.contentHeight,
             contentOffsetX: metrics.contentOffsetX
@@ -619,15 +656,24 @@ final class NotchWindowController: NSWindowController {
             && abs(lhs.size.height - rhs.size.height) < 0.05
     }
 
-    /// Leading inset of the drawn body inside the chrome window so it shares
-    /// midX with the screen-space visual rect (physical / virtual notch).
+    /// Leading inset of the drawn body inside the chrome window.
+    ///
+    /// - Default: center the drawn width inside `visual` (music scale 280/300).
+    /// - `pinTrailing`: lock the drawn body's maxX to `visual.maxX` so Music+DI
+    ///   stays flush with the physical notch's right edge through animation.
     static func contentOffsetX(
         visual: CGRect,
         contentWidth: CGFloat,
-        chrome: CGRect
+        chrome: CGRect,
+        pinTrailing: Bool = false
     ) -> CGFloat {
         let drawnWidth = max(contentWidth, 1)
-        let drawnMinX = visual.midX - drawnWidth / 2
+        let drawnMinX: CGFloat
+        if pinTrailing {
+            drawnMinX = visual.maxX - drawnWidth
+        } else {
+            drawnMinX = visual.midX - drawnWidth / 2
+        }
         return drawnMinX - chrome.minX
     }
 
@@ -687,7 +733,7 @@ final class NotchWindowController: NSWindowController {
         )
     }
 
-    static func surfaceRadii(for state: SurfaceState) -> (bottom: CGFloat, shoulder: CGFloat) {
+    nonisolated static func surfaceRadii(for state: SurfaceState) -> (bottom: CGFloat, shoulder: CGFloat) {
         switch state {
         case .collapsed:
             (8, 7)
@@ -771,6 +817,7 @@ private final class OverlayPresentationModel: ObservableObject {
     /// clip / glow stay locked to the native black body.
     @Published var bottomRadius: CGFloat = 8
     @Published var shoulderRadius: CGFloat = 7
+    @Published var trailingShoulderRadius: CGFloat = 7
     @Published var horizontalScale: CGFloat = 1
     @Published var glowOpacity: CGFloat = 0
     /// Drawn compact silhouette size inside the always-expanded window chrome.
@@ -793,7 +840,8 @@ private struct OverlaySurfaceView: View {
     var body: some View {
         let shape = NotchSurfaceShape(
             bottomRadius: model.bottomRadius,
-            shoulderRadius: model.shoulderRadius
+            leadingShoulderRadius: model.shoulderRadius,
+            trailingShoulderRadius: model.trailingShoulderRadius
         )
 
         // Window chrome stays at expanded size; compact UI is laid out in a
@@ -815,7 +863,8 @@ private struct OverlaySurfaceView: View {
             if settingsStore.rainbowGlowEnabled, model.glowOpacity > 0.01 {
                 RainbowNotchOutline(
                     bottomRadius: model.bottomRadius,
-                    shoulderRadius: model.shoulderRadius
+                    leadingShoulderRadius: model.shoulderRadius,
+                    trailingShoulderRadius: model.trailingShoulderRadius
                 )
                 .opacity(model.glowOpacity)
             }
@@ -833,7 +882,8 @@ private struct OverlaySurfaceView: View {
             if settingsStore.rainbowGlowEnabled, model.glowOpacity > 0.01 {
                 RainbowNotchOutline(
                     bottomRadius: model.bottomRadius,
-                    shoulderRadius: model.shoulderRadius
+                    leadingShoulderRadius: model.shoulderRadius,
+                    trailingShoulderRadius: model.trailingShoulderRadius
                 )
                 .scaleEffect(x: model.horizontalScale, y: 1, anchor: .center)
                 .opacity(model.glowOpacity)
@@ -1355,7 +1405,8 @@ private struct PanelComponentDivider: View {
 
 private struct RainbowNotchOutline: View {
     let bottomRadius: CGFloat
-    let shoulderRadius: CGFloat
+    let leadingShoulderRadius: CGFloat
+    let trailingShoulderRadius: CGFloat
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var hueRotation = 0.0
@@ -1363,7 +1414,8 @@ private struct RainbowNotchOutline: View {
     var body: some View {
         NotchGlowEdgeShape(
             bottomRadius: bottomRadius,
-            shoulderRadius: shoulderRadius
+            leadingShoulderRadius: leadingShoulderRadius,
+            trailingShoulderRadius: trailingShoulderRadius
         )
             .stroke(
                 AngularGradient(
@@ -1396,75 +1448,97 @@ private struct RainbowNotchOutline: View {
 
 private struct NotchGlowEdgeShape: Shape {
     let bottomRadius: CGFloat
-    let shoulderRadius: CGFloat
+    let leadingShoulderRadius: CGFloat
+    let trailingShoulderRadius: CGFloat
 
     func path(in rect: CGRect) -> Path {
-        let shoulder = min(shoulderRadius, rect.width / 4, rect.height / 2)
-        let leftEdge = rect.minX + shoulder
-        let rightEdge = rect.maxX - shoulder
-        let lowerRadius = min(bottomRadius, (rightEdge - leftEdge) / 2, rect.height - shoulder)
-
-        var path = Path()
-        path.move(to: CGPoint(x: rect.minX, y: rect.minY))
-        path.addCurve(
-            to: CGPoint(x: leftEdge, y: rect.minY + shoulder),
-            control1: CGPoint(x: rect.minX + shoulder * 0.25, y: rect.minY),
-            control2: CGPoint(x: leftEdge, y: rect.minY + shoulder * 0.5)
+        Path(
+            NotchSilhouette.path(
+                in: rect,
+                bottomRadius: bottomRadius,
+                leadingShoulderRadius: leadingShoulderRadius,
+                trailingShoulderRadius: trailingShoulderRadius,
+                topOriginAtMinY: true
+            )
         )
-        path.addLine(to: CGPoint(x: leftEdge, y: rect.maxY - lowerRadius))
-        path.addQuadCurve(
-            to: CGPoint(x: leftEdge + lowerRadius, y: rect.maxY),
-            control: CGPoint(x: leftEdge, y: rect.maxY)
-        )
-        path.addLine(to: CGPoint(x: rightEdge - lowerRadius, y: rect.maxY))
-        path.addQuadCurve(
-            to: CGPoint(x: rightEdge, y: rect.maxY - lowerRadius),
-            control: CGPoint(x: rightEdge, y: rect.maxY)
-        )
-        path.addLine(to: CGPoint(x: rightEdge, y: rect.minY + shoulder))
-        path.addCurve(
-            to: CGPoint(x: rect.maxX, y: rect.minY),
-            control1: CGPoint(x: rightEdge, y: rect.minY + shoulder * 0.5),
-            control2: CGPoint(x: rect.maxX - shoulder * 0.25, y: rect.minY)
-        )
-        return path
     }
 }
 
 private struct NotchSurfaceShape: Shape {
     let bottomRadius: CGFloat
-    let shoulderRadius: CGFloat
+    let leadingShoulderRadius: CGFloat
+    let trailingShoulderRadius: CGFloat
 
     func path(in rect: CGRect) -> Path {
-        let shoulder = min(shoulderRadius, rect.width / 4, rect.height / 2)
-        let leftEdge = rect.minX + shoulder
-        let rightEdge = rect.maxX - shoulder
-        let lowerRadius = min(bottomRadius, (rightEdge - leftEdge) / 2, rect.height - shoulder)
+        Path(
+            NotchSilhouette.path(
+                in: rect,
+                bottomRadius: bottomRadius,
+                leadingShoulderRadius: leadingShoulderRadius,
+                trailingShoulderRadius: trailingShoulderRadius,
+                topOriginAtMinY: true
+            )
+        )
+    }
+}
 
-        var path = Path()
-        path.move(to: CGPoint(x: rect.minX, y: rect.minY))
-        path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
-        path.addCurve(
-            to: CGPoint(x: rightEdge, y: rect.minY + shoulder),
-            control1: CGPoint(x: rect.maxX - shoulder * 0.25, y: rect.minY),
-            control2: CGPoint(x: rightEdge, y: rect.minY + shoulder * 0.5)
+/// Shared notch outline used by the native CAShapeLayer and SwiftUI clips.
+enum NotchSilhouette {
+    nonisolated static func path(
+        in rect: CGRect,
+        bottomRadius: CGFloat,
+        leadingShoulderRadius: CGFloat,
+        trailingShoulderRadius: CGFloat,
+        topOriginAtMinY: Bool
+    ) -> CGPath {
+        let leading = min(leadingShoulderRadius, rect.width / 4, rect.height / 2)
+        let trailing = min(trailingShoulderRadius, rect.width / 4, rect.height / 2)
+        let leftEdge = rect.minX + leading
+        let rightEdge = rect.maxX - trailing
+        let lowerRadius = min(
+            bottomRadius,
+            (rightEdge - leftEdge) / 2,
+            max(rect.height - max(leading, trailing), 0)
         )
-        path.addLine(to: CGPoint(x: rightEdge, y: rect.maxY - lowerRadius))
+
+        let topY = topOriginAtMinY ? rect.minY : rect.maxY
+        let bottomY = topOriginAtMinY ? rect.maxY : rect.minY
+        let down: CGFloat = topOriginAtMinY ? 1 : -1
+
+        let path = CGMutablePath()
+        path.move(to: CGPoint(x: rect.minX, y: topY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: topY))
+
+        if trailing > 0.05 {
+            path.addCurve(
+                to: CGPoint(x: rightEdge, y: topY + down * trailing),
+                control1: CGPoint(x: rect.maxX - trailing * 0.25, y: topY),
+                control2: CGPoint(x: rightEdge, y: topY + down * trailing * 0.5)
+            )
+        }
+
+        path.addLine(to: CGPoint(x: rightEdge, y: bottomY - down * lowerRadius))
         path.addQuadCurve(
-            to: CGPoint(x: rightEdge - lowerRadius, y: rect.maxY),
-            control: CGPoint(x: rightEdge, y: rect.maxY)
+            to: CGPoint(x: rightEdge - lowerRadius, y: bottomY),
+            control: CGPoint(x: rightEdge, y: bottomY)
         )
-        path.addLine(to: CGPoint(x: leftEdge + lowerRadius, y: rect.maxY))
+        path.addLine(to: CGPoint(x: leftEdge + lowerRadius, y: bottomY))
         path.addQuadCurve(
-            to: CGPoint(x: leftEdge, y: rect.maxY - lowerRadius),
-            control: CGPoint(x: leftEdge, y: rect.maxY)
+            to: CGPoint(x: leftEdge, y: bottomY - down * lowerRadius),
+            control: CGPoint(x: leftEdge, y: bottomY)
         )
-        path.addLine(to: CGPoint(x: leftEdge, y: rect.minY + shoulder))
-        path.addCurve(
-            to: CGPoint(x: rect.minX, y: rect.minY),
-            control1: CGPoint(x: leftEdge, y: rect.minY + shoulder * 0.5),
-            control2: CGPoint(x: rect.minX + shoulder * 0.25, y: rect.minY)
-        )
+        path.addLine(to: CGPoint(x: leftEdge, y: topY + down * leading))
+
+        if leading > 0.05 {
+            path.addCurve(
+                to: CGPoint(x: rect.minX, y: topY),
+                control1: CGPoint(x: leftEdge, y: topY + down * leading * 0.5),
+                control2: CGPoint(x: rect.minX + leading * 0.25, y: topY)
+            )
+        } else {
+            path.addLine(to: CGPoint(x: rect.minX, y: topY))
+        }
+
         path.closeSubpath()
         return path
     }
