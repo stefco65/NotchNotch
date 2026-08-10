@@ -10,10 +10,12 @@ protocol InputMonitoring: AnyObject {
 final class PointerMonitor: InputMonitoring {
     typealias HitTest = @MainActor (CGPoint) -> Bool
     typealias HoverHandler = @MainActor (Bool, CGPoint) -> Void
+    typealias PointerMovedHandler = @MainActor (CGPoint) -> Void
     typealias PointerDownHandler = @MainActor (CGPoint) -> Void
 
     private let hitTest: HitTest
     private let onHoverChanged: HoverHandler
+    private let onPointerMovedWhileInside: PointerMovedHandler?
     private let onPointerDown: PointerDownHandler
     private var globalMonitor: Any?
     private var localMonitor: Any?
@@ -22,10 +24,12 @@ final class PointerMonitor: InputMonitoring {
     init(
         hitTest: @escaping HitTest,
         onHoverChanged: @escaping HoverHandler,
+        onPointerMovedWhileInside: PointerMovedHandler? = nil,
         onPointerDown: @escaping PointerDownHandler
     ) {
         self.hitTest = hitTest
         self.onHoverChanged = onHoverChanged
+        self.onPointerMovedWhileInside = onPointerMovedWhileInside
         self.onPointerDown = onPointerDown
     }
 
@@ -76,8 +80,13 @@ final class PointerMonitor: InputMonitoring {
         let nowInside = hitTest(location)
         let didChange = nowInside != isInside
         isInside = nowInside
-        if didChange || nowInside {
+        if didChange {
+            // Enter / leave only — avoids re-kicking hover transitions on every
+            // mouseMoved while the cursor stays inside the zone.
             onHoverChanged(nowInside, location)
+        } else if nowInside {
+            // While inside, allow refinement (e.g. collapsed/hovered → musicPreview).
+            onPointerMovedWhileInside?(location)
         }
     }
 

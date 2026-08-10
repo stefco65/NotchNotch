@@ -46,7 +46,7 @@ Głównym celem produktu jest zapewnienie szybkiego dostępu do małych informac
 - z elementów Tray nie można obecnie rozpocząć drag-and-drop do innej aplikacji,
 - Tray nie ma akcji „wyczyść wszystko” ani AirDrop,
 - nie ma osobnego Drop Mode ze strefami kontekstowymi,
-- nie ma systemu Live Activities poza kompaktowym podglądem Spotify,
+- Live Activities (Dynamic Island) dla agentów/zadań są zaimplementowane jako osobny bubble po prawej stronie notcha,
 - nie ma gestów trackpada,
 - testy automatyczne nie zastępują manualnej walidacji zachowania w fullscreen, Spaces, Mission Control, Stage Manager oraz zachowania focusu.
 
@@ -582,12 +582,14 @@ Fizyczny notch jest wykrywany, gdy ekran ma dodatni `safeAreaInsets.top` oraz pr
 
 ## 16. Zasady geometrii
 
-Każdy stan jest zawsze zakotwiczony tak, aby:
+Każdy stan notcha jest zakotwiczony tak, aby:
 
 - `frame.midX == display.frame.midX`,
 - `frame.maxY == display.frame.maxY`.
 
-Oznacza to rozszerzanie symetryczne na boki i wyłącznie w dół.
+Oznacza to rozszerzanie symetryczne na boki i wyłącznie w dół. Live Activity **nie** przesuwa ani nie ucina notcha — bubble odłącza się na prawo od stałego `maxX`.
+
+Geometrię napędza jeden `NotchGeometryAnimator` (`PresentationMetrics`: frame, radii, horizontalScale, glowOpacity). Nie wolno równolegle animować `NSWindow.animator()`, niezależnego springa na `CAShapeLayer` i SwiftUI shape.
 
 | Stan | Szerokość bazowa | Wysokość |
 |---|---|---|
@@ -596,7 +598,7 @@ Oznacza to rozszerzanie symetryczne na boki i wyłącznie w dół.
 | `musicPreview` | `max(anchor.width, 120) + (Spotify ? 100 : 40)` | baza + 64 |
 | `expanded` | ustawienie 520–1800, ograniczone do ekranu - 48 | 204 |
 
-Frame jest całkowany przez `.integral`, aby ograniczyć problemy z renderowaniem na połówkowych pikselach.
+Frame docelowy jest całkowany przez `.integral`; klatki pośrednie animacji mogą być połówkowe.
 
 ## 17. Najważniejsze zależności i przepływy danych
 

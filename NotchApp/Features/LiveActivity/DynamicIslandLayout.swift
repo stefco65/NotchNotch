@@ -1,109 +1,205 @@
 import CoreGraphics
 import Foundation
 
-/// Shared geometry for the iOS-style Dynamic Island split:
-/// the compact "music-expanded" envelope stays centered, the main notch
-/// keeps the left portion (asymmetric), and the right portion detaches
-/// into the live-activity bubble.
+/// Shared geometry for the Dynamic Island split.
+///
+/// The idle notch always matches `display.anchor.rect` (the real hardware /
+/// virtual cutout). Music and hover expand around that anchor's midX. With DI
+/// the right edge stays on the physical notch's maxX; extra width stays on the left.
 enum DynamicIslandLayout {
-    /// Extra width the compact notch gains for music / live activity
-    /// (matches the existing now-playing expansion).
     nonisolated static let compactExtraWidth: CGFloat = 100
-    /// Visible gap between the cut notch and the detached bubble.
-    nonisolated static let splitGap: CGFloat = 6
+    nonisolated static let idleHoverExtraWidth: CGFloat = 40
+    nonisolated static let splitGap: CGFloat = 2
+    nonisolated static let attachOverlap: CGFloat = 10
 
     nonisolated static func bubbleDiameter(anchorHeight: CGFloat) -> CGFloat {
         max(min(anchorHeight - 8, 32), 22)
     }
 
-    /// Width reserved for the detached right pill inside the compact envelope.
+    nonisolated static func bubbleSlotWidth(display: DisplayDescriptor) -> CGFloat {
+        bubbleDiameter(anchorHeight: max(display.anchor.rect.height, 12))
+    }
+
     nonisolated static func bubbleSlotWidth(surfaceHeight: CGFloat) -> CGFloat {
         bubbleDiameter(anchorHeight: surfaceHeight)
     }
 
-    /// Centered envelope that the music-expanded notch used to occupy.
-    /// When the island splits, the main notch and the bubble share this
-    /// envelope: main on the left, bubble on the right.
-    nonisolated static func compactEnvelope(
+    nonisolated static func physicalNotchWidth(display: DisplayDescriptor) -> CGFloat {
+        max(display.anchor.rect.width, 120)
+    }
+
+    nonisolated static func compactHeight(
         for state: NotchWindowController.SurfaceState,
-        display: DisplayDescriptor,
-        showsNowPlaying: Bool,
-        showsLiveActivity: Bool
-    ) -> CGRect {
-        let anchor = display.anchor.rect
-        let baseWidth = max(anchor.width, 120)
-        let needsExtra = showsNowPlaying || showsLiveActivity
-        let width: CGFloat
-        let height: CGFloat
-
+        display: DisplayDescriptor
+    ) -> CGFloat {
+        let base = max(display.anchor.rect.height, 12)
         switch state {
-        case .collapsed:
-            width = baseWidth + (needsExtra ? compactExtraWidth : 0)
-            height = max(anchor.height, 12)
+        case .collapsed, .expanded:
+            return base
         case .hovered:
-            width = baseWidth + (needsExtra ? compactExtraWidth : 40)
-            height = max(anchor.height, 12) + 20
+            return base + 20
         case .musicPreview:
-            width = baseWidth + (needsExtra ? compactExtraWidth : 40)
-            height = max(anchor.height, 12) + 64
-        case .expanded:
-            // Expanded panel is always centered; the island is hidden.
-            width = baseWidth
-            height = max(anchor.height, 12)
+            return base + 64
         }
+    }
 
+    /// Exact resting frame of the physical / virtual notch. Uses the resolved
+    /// anchor rect so the black body lines up with the hardware cutout — not a
+    /// re-centered guess from `display.frame.midX`.
+    nonisolated static func physicalNotchFrame(display: DisplayDescriptor) -> CGRect {
+        let anchor = display.anchor.rect
+        let height = max(anchor.height, 12)
+        let width = max(anchor.width, 120)
+        if anchor.width >= 120 {
+            return CGRect(
+                x: anchor.minX,
+                y: display.frame.maxY - height,
+                width: anchor.width,
+                height: height
+            ).integral
+        }
+        // Tiny anchors: grow to the 120pt minimum around the real cutout center.
         return CGRect(
-            x: display.frame.midX - width / 2,
+            x: anchor.midX - width / 2,
             y: display.frame.maxY - height,
             width: width,
             height: height
         ).integral
     }
 
-    /// Main notch frame inside the envelope. When the island is split the
-    /// left edge stays put and the right edge pulls in — the notch becomes
-    /// asymmetric relative to the display center.
-    nonisolated static func mainNotchFrame(
-        envelope: CGRect,
+    /// Centered capsule expanded around the physical notch midX.
+    nonisolated static func centeredCapsule(
+        for state: NotchWindowController.SurfaceState,
+        display: DisplayDescriptor,
+        showsNowPlaying: Bool
+    ) -> CGRect {
+        let physical = physicalNotchFrame(display: display)
+        let height = compactHeight(for: state, display: display)
+        let extra: CGFloat
+        switch state {
+        case .collapsed:
+            extra = showsNowPlaying ? compactExtraWidth : 0
+        case .hovered, .musicPreview:
+            extra = showsNowPlaying ? compactExtraWidth : idleHoverExtraWidth
+        case .expanded:
+            extra = 0
+        }
+        let width = physical.width + extra
+        return CGRect(
+            x: physical.midX - width / 2,
+            y: display.frame.maxY - height,
+            width: width,
+            height: height
+        ).integral
+    }
+
+    /// Compact frame. Without DI: centered capsule on the physical notch.
+    /// With DI: stable left (music / physical), right snapped to physical maxX.
+    nonisolated static func compactEnvelope(
+        for state: NotchWindowController.SurfaceState,
+        display: DisplayDescriptor,
+        showsNowPlaying: Bool,
         showsLiveActivity: Bool
     ) -> CGRect {
-        guard showsLiveActivity else { return envelope }
-        let slot = bubbleSlotWidth(surfaceHeight: envelope.height)
-        let width = max(envelope.width - splitGap - slot, 1)
+        let height = compactHeight(for: state, display: display)
+        let y = display.frame.maxY - height
+
+        guard showsLiveActivity else {
+            return centeredCapsule(
+                for: state,
+                display: display,
+                showsNowPlaying: showsNowPlaying
+            )
+        }
+
+        let physical = physicalNotchFrame(display: display)
+        let left: CGFloat
+        if showsNowPlaying {
+            left = centeredCapsule(
+                for: .collapsed,
+                display: display,
+                showsNowPlaying: true
+            ).minX
+        } else {
+            left = physical.minX
+        }
+
+        return snapRightEdge(
+            left: left,
+            right: physical.maxX,
+            y: y,
+            height: height
+        )
+    }
+
+    /// Build a rect whose maxX lands exactly on `right` after integral rounding.
+    nonisolated static func snapRightEdge(
+        left: CGFloat,
+        right: CGFloat,
+        y: CGFloat,
+        height: CGFloat
+    ) -> CGRect {
+        let provisional = CGRect(
+            x: left,
+            y: y,
+            width: max(right - left, 1),
+            height: height
+        ).integral
         return CGRect(
-            x: envelope.minX,
-            y: envelope.minY,
+            x: provisional.origin.x,
+            y: provisional.origin.y,
+            width: max(right - provisional.origin.x, 1),
+            height: provisional.height
+        )
+    }
+
+    nonisolated static func mainNotchFrame(
+        envelope: CGRect,
+        display: DisplayDescriptor,
+        showsLiveActivity: Bool,
+        showsNowPlaying: Bool = false
+    ) -> CGRect {
+        _ = display
+        _ = showsLiveActivity
+        _ = showsNowPlaying
+        return envelope
+    }
+
+    nonisolated static func bubbleWindowFrame(adjacentTo notchFrame: CGRect) -> CGRect {
+        let diameter = bubbleDiameter(anchorHeight: notchFrame.height)
+        let width = attachOverlap + splitGap + diameter + 48
+        return CGRect(
+            x: notchFrame.maxX - attachOverlap,
+            y: notchFrame.maxY - max(notchFrame.height, 48),
             width: width,
-            height: envelope.height
+            height: max(notchFrame.height, 48)
         ).integral
     }
 
-    /// Screen frame of the bubble window. Sized generously so the capsule
-    /// can grow for multi-digit counts; the visible pill is laid out inside
-    /// the right slot of the envelope.
+    nonisolated static func bubbleWindowFrame(
+        adjacentTo notchFrame: CGRect,
+        display: DisplayDescriptor
+    ) -> CGRect {
+        let diameter = bubbleSlotWidth(display: display)
+        let width = attachOverlap + splitGap + diameter + 48
+        return CGRect(
+            x: notchFrame.maxX - attachOverlap,
+            y: notchFrame.maxY - max(notchFrame.height, 48),
+            width: width,
+            height: max(notchFrame.height, 48)
+        ).integral
+    }
+
     nonisolated static func bubbleWindowFrame(envelope: CGRect) -> CGRect {
-        let slot = bubbleSlotWidth(surfaceHeight: envelope.height)
-        // Window covers the right slot plus a little leading overlap so the
-        // pill can animate from "still attached" to "detached".
-        let overlap: CGFloat = 20
-        let width = slot + overlap + 48
-        return CGRect(
-            x: envelope.maxX - slot - overlap,
-            y: envelope.maxY - max(envelope.height, 48),
-            width: width,
-            height: max(envelope.height, 48)
-        ).integral
+        bubbleWindowFrame(adjacentTo: envelope)
     }
 
-    /// Leading padding inside the bubble window that places the visible
-    /// capsule into the envelope's right slot when detached.
     nonisolated static func bubbleRestingLeadingInset(envelope: CGRect) -> CGFloat {
-        20 + splitGap
+        _ = envelope
+        return attachOverlap + splitGap
     }
 
-    /// Leading padding when the capsule is still visually attached (under
-    /// the notch's right shoulder, before the split finishes).
     nonisolated static func bubbleAttachedLeadingInset() -> CGFloat {
-        6
+        3
     }
 }

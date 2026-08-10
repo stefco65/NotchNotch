@@ -3,36 +3,54 @@ import Foundation
 
 /// One piece of "live" information the dynamic-island bubble can display.
 enum LiveActivity: Equatable, Sendable {
-    /// Aggregated agent state across all sources. The state carries the
-    /// display priority: stopped (orange) > done (green) > working (blue).
+    /// Aggregated agent state across all sources. Bucket priority inside the
+    /// agents component: working (blue) > stopped (orange) > done (green).
     case agents(state: AgentActivityState, count: Int)
     /// Number of open tasks on the task list.
     case tasks(count: Int)
 }
 
+/// Who currently owns the Dynamic Island turn. Only a real component state
+/// update (or music starting) may change the owner — there is no timeout.
+enum LiveActivityDisplayOwner: Equatable, Sendable {
+    case agents
+    case tasks
+    /// Music claimed the notch; the DI bubble stays hidden.
+    case music
+    case none
+}
+
 /// Decides what the dynamic-island bubble next to the notch should show.
 ///
-/// Rules:
-///  - When agent counts change, the agent summary takes the bubble over for
-///    `agentTakeoverDuration` seconds (like an iOS Live Activity update).
-///  - Otherwise the bubble shows the open-task count, if any tasks exist.
-///  - With nothing to show the bubble hides (`activity == nil`).
+/// Rules (last update wins):
+///  - An agents status change claims the island and keeps it until something
+///    else updates (agents have priority on cold start).
+///  - A tasks count change claims the island with the open-task count.
+///  - Music starting claims the turn and **hides** the DI so the compact
+///    music surface can take over; a later agents/tasks update can reclaim.
+///  - No timers — content stays until the next claiming update.
 @MainActor
 final class LiveActivityCenter: ObservableObject {
     @Published private(set) var activity: LiveActivity?
 
-    /// How long an agent status update owns the bubble before it falls back
-    /// to the default content.
-    static let agentTakeoverDuration: TimeInterval = 8
-
+    private var owner: LiveActivityDisplayOwner = .none
     private var latestAgentHighlight: LiveActivity?
     private var openTaskCount = 0
-    private var agentTakeoverActive = false
-    private var takeoverExpiryTask: Task<Void, Never>?
     private var cancellables = Set<AnyCancellable>()
 
-    init(agentMonitorStore: AgentMonitorStore, taskStore: TaskStore) {
+    init(
+        agentMonitorStore: AgentMonitorStore,
+        taskStore: TaskStore,
+        spotifyMusicStore: SpotifyMusicStore
+    ) {
         latestAgentHighlight = Self.agentHighlight(from: agentMonitorStore.summaries)
+        openTaskCount = taskStore.items.count { !$0.isCompleted }
+        owner = Self.initialOwner(
+            agentHighlight: latestAgentHighlight,
+            openTaskCount: openTaskCount,
+            isMusicPlaying: spotifyMusicStore.hasActiveTrack
+        )
+        publish()
 
         agentMonitorStore.$summaries
             .map(Self.agentHighlight(from:))
@@ -42,11 +60,10 @@ final class LiveActivityCenter: ObservableObject {
                 MainActor.assumeIsolated {
                     guard let self else { return }
                     self.latestAgentHighlight = highlight
-                    if highlight != nil {
-                        self.beginAgentTakeover()
-                    } else {
-                        self.resolveActivity()
-                    }
+                    // Any agents status change claims the island (including
+                    // clearing it when the highlight becomes nil).
+                    self.owner = .agents
+                    self.publish()
                 }
             }
             .store(in: &cancellables)
@@ -54,23 +71,36 @@ final class LiveActivityCenter: ObservableObject {
         taskStore.$items
             .map { items in items.count { !$0.isCompleted } }
             .removeDuplicates()
+            .dropFirst()
             .sink { [weak self] count in
                 MainActor.assumeIsolated {
                     guard let self else { return }
                     self.openTaskCount = count
-                    self.resolveActivity()
+                    self.owner = .tasks
+                    self.publish()
                 }
             }
             .store(in: &cancellables)
 
-        resolveActivity()
+        spotifyMusicStore.$hasActiveTrack
+            .removeDuplicates()
+            .dropFirst()
+            .sink { [weak self] isPlaying in
+                MainActor.assumeIsolated {
+                    guard let self, isPlaying else { return }
+                    // Music starting takes the turn and hides the DI. Stopping
+                    // does not auto-restore — the next agents/tasks update will.
+                    self.owner = .music
+                    self.publish()
+                }
+            }
+            .store(in: &cancellables)
     }
 
     // MARK: - Pure decision logic (unit-tested)
 
     /// Collapses all per-source agent counts into the single most important
-    /// piece of information. Priority: stopped (orange) > done (green) >
-    /// working (blue). Sources whose application is not running are ignored.
+    /// bucket for the Agents component / DI: working > stopped > done.
     nonisolated static func agentHighlight(from summaries: [AgentSourceSummary]) -> LiveActivity? {
         var totals = AgentCounts()
         for summary in summaries where summary.isApplicationRunning {
@@ -78,47 +108,47 @@ final class LiveActivityCenter: ObservableObject {
             totals.stopped += summary.counts.stopped
             totals.done += summary.counts.done
         }
+        if totals.working > 0 { return .agents(state: .working, count: totals.working) }
         if totals.stopped > 0 { return .agents(state: .stopped, count: totals.stopped) }
         if totals.done > 0 { return .agents(state: .done, count: totals.done) }
-        if totals.working > 0 { return .agents(state: .working, count: totals.working) }
         return nil
     }
 
-    /// Picks the activity to display given the current inputs.
-    nonisolated static func resolve(
+    /// Cold-start owner. Agents win over tasks; music only claims when neither
+    /// agents nor tasks have anything to show.
+    nonisolated static func initialOwner(
         agentHighlight: LiveActivity?,
-        agentTakeoverActive: Bool,
+        openTaskCount: Int,
+        isMusicPlaying: Bool
+    ) -> LiveActivityDisplayOwner {
+        if agentHighlight != nil { return .agents }
+        if openTaskCount > 0 { return .tasks }
+        if isMusicPlaying { return .music }
+        return .none
+    }
+
+    /// Maps the current owner + latest component snapshots onto DI content.
+    nonisolated static func resolve(
+        owner: LiveActivityDisplayOwner,
+        agentHighlight: LiveActivity?,
         openTaskCount: Int
     ) -> LiveActivity? {
-        if agentTakeoverActive, let agentHighlight {
+        switch owner {
+        case .agents:
             return agentHighlight
+        case .tasks:
+            return openTaskCount > 0 ? .tasks(count: openTaskCount) : nil
+        case .music, .none:
+            return nil
         }
-        if openTaskCount > 0 {
-            return .tasks(count: openTaskCount)
-        }
-        return nil
     }
 
     // MARK: - Private
 
-    private func beginAgentTakeover() {
-        agentTakeoverActive = true
-        takeoverExpiryTask?.cancel()
-        takeoverExpiryTask = Task { [weak self] in
-            try? await Task.sleep(
-                nanoseconds: UInt64(Self.agentTakeoverDuration * 1_000_000_000)
-            )
-            guard !Task.isCancelled else { return }
-            self?.agentTakeoverActive = false
-            self?.resolveActivity()
-        }
-        resolveActivity()
-    }
-
-    private func resolveActivity() {
+    private func publish() {
         let resolved = Self.resolve(
+            owner: owner,
             agentHighlight: latestAgentHighlight,
-            agentTakeoverActive: agentTakeoverActive,
             openTaskCount: openTaskCount
         )
         if resolved != activity {
