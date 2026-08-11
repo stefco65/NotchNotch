@@ -16,57 +16,11 @@ enum CursorEventMapper {
     static let recencyWindow: TimeInterval = 3600
 
     static func status(from signals: ComposerSignals) -> AgentStatus {
-        // Match Cursor's own header classification priority:
-        // needs_attention (blocking / pending plan) > in_progress > done.
-        if signals.hasBlockingPendingActions || signals.hasPendingPlan {
-            return .waitingForUser
-        }
+        CursorAgentStatus.resolve(from: signals).canonicalStatus
+    }
 
-        let status = signals.status.lowercased()
-
-        // Explicit terminal statuses win over a stale unfinishedRunAt —
-        // Cursor sometimes leaves unfinishedRunAt set after status flips
-        // to completed/none.
-        let isTerminal =
-            status == "completed"
-            || status == "none"
-            || status == "cancelled"
-            || status == "canceled"
-            || status == "error"
-            || status == "failed"
-
-        let isExplicitlyGenerating =
-            status == "generating"
-            || status == "running"
-            || status == "runningwithqueuedresume"
-            || status == "in_progress"
-            || status == "in-progress"
-            || status == "processing"
-            || status == "ongoing"
-
-        // unfinishedRunAt is the live "still running" signal for aborted /
-        // unknown races, but must not override a completed turn.
-        let isGenerating =
-            isExplicitlyGenerating
-            || signals.isContinuationInProgress
-            || signals.generatingBubbleCount > 0
-            || (signals.hasUnfinishedRun && !isTerminal)
-
-        if isGenerating {
-            return .working
-        }
-
-        switch status {
-        case "blocked", "waiting", "paused", "interrupted":
-            // Stopped and waiting for a user decision / permission.
-            return .waitingForUser
-        case "aborted", "cancelled", "canceled", "error", "failed",
-             "completed", "none":
-            // Finished / cancelled turns are not "waiting for user".
-            return .completed
-        default:
-            return .completed
-        }
+    static func nativeStatus(from signals: ComposerSignals) -> CursorAgentStatus {
+        CursorAgentStatus.resolve(from: signals)
     }
 
     static func shouldInclude(

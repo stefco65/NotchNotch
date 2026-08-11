@@ -413,11 +413,14 @@ Dynamic Island / agregat pokazuje jeden bucket z priorytetem: pomarańczowy → 
 
 Architektura monitora:
 
+- `AgentToolFactory` buduje pluggable `AgentToolInterface` dla Cursor / Codex / Antigravity (łatwo dodać kolejne narzędzia),
+- każdy interfejs ma natywny enum statusów (`CursorAgentStatus`, `CodexAgentStatus`, `AntigravityAgentStatus`) mapowany na kanoniczny `AgentStatus`,
+- każdy interfejs ma `AgentToolSignalMonitor` (watchery plików stanu / WAL), który po zmianie odpala resync i odświeża liczniki oraz Dynamic Island,
 - `ApplicationPresenceMonitor` (NSWorkspace + bundle ID) wykrywa start/stop aplikacji providera,
 - adaptery (`CursorAdapter`, `CodexAdapter`, `AntigravityAdapter`) normalizują eventy i robią `resync()`,
 - `AgentStateStore` jest jedynym źródłem prawdy; liczniki są wyliczane ze snapshotów agentów,
-- IPC Unix socket (`~/Library/Application Support/NotchNook/agent-events.sock`) + CLI `agentbridge` przyjmują eventy z hooków,
-- okresowa reconciliation (~1 s) oraz watchery plików stanu/logów (w tym SQLite WAL Cursora) naprawiają utracone eventy.
+- IPC Unix socket (`~/Library/Application Support/NotchNook/agent-events.sock`) + CLI `agentbridge` przyjmują eventy z hooków (mapowanie kind per tool),
+- okresowa reconciliation (~1 s) oraz sygnały z monitorów naprawiają utracone eventy.
 
 Jeżeli dana aplikacja nie działa, jej wiersz jest przygaszony, a liczniki wynoszą zero — niezależnie od wcześniejszego stanu runtime.
 

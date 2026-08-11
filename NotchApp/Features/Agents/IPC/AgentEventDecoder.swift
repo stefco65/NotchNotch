@@ -38,12 +38,13 @@ enum AgentEventDecoder {
 
     static func normalize(
         _ payload: AgentEventPayload,
-        fallbackInstanceID: UUID?
+        fallbackInstanceID: UUID?,
+        kindOverride: NormalizedAgentEvent.Kind? = nil
     ) -> NormalizedAgentEvent? {
         guard let provider = AgentProvider(rawValue: payload.provider.lowercased()) else {
             return nil
         }
-        guard let kind = mapKind(payload.event) else {
+        guard let kind = kindOverride ?? mapKind(payload.event) else {
             return nil
         }
 

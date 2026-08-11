@@ -1,7 +1,7 @@
 import Combine
 import Foundation
 
-/// Coordinates presence monitoring, provider adapters, IPC and reconciliation.
+/// Coordinates presence monitoring, provider tool interfaces, IPC and reconciliation.
 /// Publishes UI-facing `summaries` derived exclusively from `AgentStateStore`.
 @MainActor
 final class AgentMonitorStore: ObservableObject {
@@ -18,10 +18,9 @@ final class AgentMonitorStore: ObservableObject {
     private let reconciliation = AgentReconciliationService(intervalSeconds: 1)
     private let eventServer = AgentEventServer()
 
-    private var adapters: [AgentProvider: any AgentProviderAdapter] = [:]
+    private var tools: [AgentProvider: any AgentToolInterface] = [:]
     private var activeProviders = Set<AgentProvider>()
     private var storeCancellable: AnyCancellable?
-    private var fsWatchers: [String: DispatchSourceFileSystemObject] = [:]
     private var debounceTask: Task<Void, Never>?
     private var hasStarted = false
     private var isResyncing = false
@@ -34,23 +33,33 @@ final class AgentMonitorStore: ObservableObject {
     init(
         stateStore: AgentStateStore? = nil,
         paths: AgentMonitorPaths = .currentUser(),
+        tools: [any AgentToolInterface]? = nil,
         adapters: [any AgentProviderAdapter]? = nil
     ) {
         let resolvedStore = stateStore ?? AgentStateStore()
         self.stateStore = resolvedStore
         self.paths = paths
 
-        let builtAdapters = adapters ?? [
-            CursorAdapter(paths: paths),
-            CodexAdapter(paths: paths),
-            AntigravityAdapter(paths: paths)
-        ]
-        for adapter in builtAdapters {
-            self.adapters[adapter.provider] = adapter
-            adapter.onEvent = { [weak self] event in
+        let resolvedTools: [any AgentToolInterface]
+        if let tools {
+            resolvedTools = tools
+        } else if let adapters {
+            // Test / legacy injection: wrap bare adapters in lightweight shells
+            // without filesystem signal monitors.
+            resolvedTools = adapters.map { AdapterOnlyToolInterface(adapter: $0) }
+        } else {
+            resolvedTools = AgentToolFactory.makeDefaultTools(paths: paths)
+        }
+
+        for tool in resolvedTools {
+            self.tools[tool.provider] = tool
+            tool.adapter.onEvent = { [weak self] event in
                 Task { @MainActor in
                     self?.stateStore.handle(event)
                 }
+            }
+            tool.signalMonitor.onChange = { [weak self] in
+                self?.scheduleResync(debounceMs: 120)
             }
         }
 
@@ -79,7 +88,6 @@ final class AgentMonitorStore: ObservableObject {
         // Presence callbacks are async; overlays/UI must not wait on first resync.
         presenceMonitor.start()
 
-        ensureFileSystemWatchers()
         reconciliation.start { [weak self] in
             await self?.resyncActiveProviders()
         }
@@ -95,13 +103,10 @@ final class AgentMonitorStore: ObservableObject {
         reconciliation.stop()
         presenceMonitor.stop()
         for provider in activeProviders {
-            adapters[provider]?.stop()
+            tools[provider]?.signalMonitor.stop()
+            tools[provider]?.adapter.stop()
         }
         activeProviders.removeAll()
-        for watcher in fsWatchers.values {
-            watcher.cancel()
-        }
-        fsWatchers.removeAll()
         Task { await eventServer.stop() }
         hasStarted = false
     }
@@ -115,17 +120,18 @@ final class AgentMonitorStore: ObservableObject {
     private func handleProviderStarted(_ provider: AgentProvider) async {
         stateStore.providerStarted(provider)
         guard let instanceID = stateStore.instanceID(for: provider),
-              let adapter = adapters[provider] else {
+              let tool = tools[provider] else {
             publishSummaries()
             return
         }
 
         activeProviders.insert(provider)
+        tool.signalMonitor.start()
         publishSummaries()
 
         do {
-            try await adapter.start(instanceID: instanceID)
-            let agents = try await adapter.resync()
+            try await tool.adapter.start(instanceID: instanceID)
+            let agents = try await tool.adapter.resync()
             // Provider may have been stopped while we were scanning.
             guard activeProviders.contains(provider) else { return }
             stateStore.replaceAgents(agents, for: provider)
@@ -138,7 +144,8 @@ final class AgentMonitorStore: ObservableObject {
     }
 
     private func handleProviderStopped(_ provider: AgentProvider) async {
-        adapters[provider]?.stop()
+        tools[provider]?.signalMonitor.stop()
+        tools[provider]?.adapter.stop()
         activeProviders.remove(provider)
         stateStore.providerStopped(provider)
         publishSummaries()
@@ -165,14 +172,12 @@ final class AgentMonitorStore: ObservableObject {
         isResyncing = true
         defer { isResyncing = false }
 
-        ensureFileSystemWatchers()
-
         let providers = Array(activeProviders)
         for provider in providers {
             guard activeProviders.contains(provider),
-                  let adapter = adapters[provider] else { continue }
+                  let tool = tools[provider] else { continue }
             do {
-                let agents = try await adapter.resync()
+                let agents = try await tool.adapter.resync()
                 guard activeProviders.contains(provider) else { continue }
                 stateStore.replaceAgents(agents, for: provider)
             } catch {
@@ -209,47 +214,17 @@ final class AgentMonitorStore: ObservableObject {
     private func ingestIPCPayload(_ payload: AgentEventPayload) {
         guard let provider = AgentProvider(rawValue: payload.provider.lowercased()) else { return }
         let fallbackInstanceID = stateStore.instanceID(for: provider)
-        guard let event = AgentEventDecoder.normalize(payload, fallbackInstanceID: fallbackInstanceID) else {
+        let kindOverride = tools[provider]?.mapHookEvent(payload.event)
+        guard let event = AgentEventDecoder.normalize(
+            payload,
+            fallbackInstanceID: fallbackInstanceID,
+            kindOverride: kindOverride
+        ) else {
             AgentEventLogger.debug("IPC event rejected / incomplete")
             return
         }
         stateStore.handle(event)
         publishSummaries()
-    }
-
-    // MARK: - File watchers (resync triggers)
-
-    private func ensureFileSystemWatchers() {
-        for url in paths.watchTargets where fsWatchers[url.path] == nil {
-            watchPath(url.path)
-        }
-    }
-
-    private func watchPath(_ path: String) {
-        let fd = open(path, O_EVTONLY)
-        guard fd >= 0 else { return }
-
-        let source = DispatchSource.makeFileSystemObjectSource(
-            fileDescriptor: fd,
-            eventMask: [.write, .rename, .delete, .extend, .attrib, .link],
-            queue: .main
-        )
-
-        source.setEventHandler { [weak self, weak source] in
-            let flags = source?.data ?? []
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                if flags.contains(.delete) || flags.contains(.rename) {
-                    self.fsWatchers[path]?.cancel()
-                    self.fsWatchers[path] = nil
-                }
-                // Cursor WAL bursts are frequent — coalesce, but stay snappy.
-                self.scheduleResync(debounceMs: 120)
-            }
-        }
-        source.setCancelHandler { close(fd) }
-        source.resume()
-        fsWatchers[path] = source
     }
 
     // MARK: - UI publish
@@ -260,4 +235,37 @@ final class AgentMonitorStore: ObservableObject {
         summaries = next
         renderEpoch &+= 1
     }
+}
+
+/// Thin shell so tests can still inject bare `AgentProviderAdapter` instances.
+@MainActor
+private final class AdapterOnlyToolInterface: AgentToolInterface {
+    let provider: AgentProvider
+    let capabilities: ProviderCapabilities
+    let adapter: any AgentProviderAdapter
+    let signalMonitor: any AgentToolSignalMonitor
+
+    init(adapter: any AgentProviderAdapter) {
+        self.provider = adapter.provider
+        self.capabilities = adapter.capabilities
+        self.adapter = adapter
+        self.signalMonitor = NoopAgentSignalMonitor(provider: adapter.provider)
+    }
+
+    func mapHookEvent(_ name: String) -> NormalizedAgentEvent.Kind? {
+        AgentEventDecoder.mapKind(name)
+    }
+}
+
+@MainActor
+private final class NoopAgentSignalMonitor: AgentToolSignalMonitor {
+    let provider: AgentProvider
+    var onChange: (() -> Void)?
+
+    init(provider: AgentProvider) {
+        self.provider = provider
+    }
+
+    func start() {}
+    func stop() {}
 }

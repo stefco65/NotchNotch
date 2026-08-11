@@ -5,27 +5,21 @@ enum AntigravityEventMapper {
 
     /// Map a raw Antigravity / Jetski `StepStatus` integer.
     static func status(fromStepStatus status: Int) -> AgentStatus {
-        switch status {
-        case 1, 2:
-            return .working
-        case 3:
-            return .completed
-        case 4, 5, 6, 7:
-            // WaitingForUser / Error / Canceled / TerminalError — orange bucket.
-            return .waitingForUser
-        default:
-            return status < 3 ? .working : .completed
-        }
+        AntigravityAgentStatus.resolve(stepStatus: status).canonicalStatus
+    }
+
+    static func nativeStatus(fromStepStatus status: Int) -> AntigravityAgentStatus {
+        AntigravityAgentStatus.resolve(stepStatus: status)
     }
 
     static func conversationStatus(
         lastStatus: Int,
         hasWorkingStep: Bool
     ) -> AgentStatus {
-        if hasWorkingStep || lastStatus == 1 || lastStatus == 2 {
-            return .working
-        }
-        return status(fromStepStatus: lastStatus)
+        AntigravityAgentStatus.resolveConversation(
+            lastStatus: lastStatus,
+            hasWorkingStep: hasWorkingStep
+        ).canonicalStatus
     }
 
     static func mapHookEvent(_ name: String) -> NormalizedAgentEvent.Kind? {
