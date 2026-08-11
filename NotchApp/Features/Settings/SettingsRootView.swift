@@ -18,7 +18,7 @@ struct SettingsRootView: View {
             }
             .formStyle(.grouped)
         }
-        .frame(minWidth: 640, minHeight: 680)
+        .frame(minWidth: 480, minHeight: 360)
         .onAppear {
             store.refreshInstalledShortcuts()
         }
@@ -52,9 +52,9 @@ struct SettingsRootView: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .padding(.horizontal, 24)
-        .padding(.top, 22)
-        .padding(.bottom, 8)
+        .padding(.horizontal, 20)
+        .padding(.top, 14)
+        .padding(.bottom, 4)
     }
 
     private var panelSection: some View {
@@ -123,7 +123,7 @@ struct SettingsRootView: View {
 
                 Spacer()
 
-                Text("Szerokość i kolejność komponentów można zmieniać wyłącznie tutaj.")
+                Text("Szerokość można zmieniać suwakiem tutaj albo przeciągając separatory w otwartym notchu, gdy to okno jest widoczne.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

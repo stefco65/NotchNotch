@@ -347,6 +347,38 @@ final class SettingsStore: ObservableObject {
         persistComponents()
     }
 
+    /// Live divider drag: keeps `left + right` constant without writing defaults
+    /// or resizing the notch window (that would glitch under the cursor).
+    func previewDividerWeights(
+        leftID: UUID,
+        rightID: UUID,
+        leftWeight: Double,
+        rightWeight: Double
+    ) {
+        guard let leftIndex = components.firstIndex(where: { $0.id == leftID }),
+              let rightIndex = components.firstIndex(where: { $0.id == rightID }) else {
+            return
+        }
+
+        let pairTotal = components[leftIndex].widthWeight + components[rightIndex].widthWeight
+        var left = min(max(leftWeight, 0.5), pairTotal - 0.5)
+        var right = pairTotal - left
+        right = min(max(right, 0.5), pairTotal - 0.5)
+        left = pairTotal - right
+
+        let leftChanged = abs(components[leftIndex].widthWeight - left) > 0.0001
+        let rightChanged = abs(components[rightIndex].widthWeight - right) > 0.0001
+        guard leftChanged || rightChanged else { return }
+
+        components[leftIndex].widthWeight = left
+        components[rightIndex].widthWeight = right
+    }
+
+    /// Persists the current component layout after a divider drag ends.
+    func commitComponentLayout() {
+        persistComponents()
+    }
+
     func adjustDivider(leftID: UUID, rightID: UUID, deltaWeight: Double) {
         guard let leftIndex = components.firstIndex(where: { $0.id == leftID }),
               let rightIndex = components.firstIndex(where: { $0.id == rightID }) else {

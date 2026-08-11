@@ -69,6 +69,35 @@ final class SettingsStoreTests: XCTestCase {
         )
     }
 
+    func testPreviewDividerDoesNotPersistUntilCommit() throws {
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        let store = SettingsStore(defaults: defaults)
+        let left = try XCTUnwrap(store.components.first)
+        let right = try XCTUnwrap(store.components.dropFirst().first)
+        var geometryPulses = 0
+        store.onGeometryChange = { geometryPulses += 1 }
+
+        store.previewDividerWeights(
+            leftID: left.id,
+            rightID: right.id,
+            leftWeight: left.widthWeight + 0.35,
+            rightWeight: right.widthWeight - 0.35
+        )
+
+        XCTAssertEqual(geometryPulses, 0)
+        let previewed = SettingsStore(defaults: defaults)
+        XCTAssertEqual(previewed.components[0].widthWeight, left.widthWeight, accuracy: 0.0001)
+
+        store.commitComponentLayout()
+        XCTAssertEqual(geometryPulses, 1)
+        let committed = SettingsStore(defaults: defaults)
+        XCTAssertEqual(
+            committed.components[0].widthWeight,
+            left.widthWeight + 0.35,
+            accuracy: 0.0001
+        )
+    }
+
     func testShortcutButtonSizeOrderAndRemovalPersist() throws {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         let first = ShortcutButtonConfiguration(shortcutName: "Pierwszy")

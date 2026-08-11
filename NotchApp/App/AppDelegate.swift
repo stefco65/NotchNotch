@@ -258,12 +258,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func showSettingsWindow() {
         if settingsWindowController == nil {
-            settingsWindowController = SettingsWindowController(store: settingsStore)
+            let controller = SettingsWindowController(store: settingsStore)
+            controller.onDismiss = { [weak self] in
+                self?.setComponentDividersInteractive(false)
+            }
+            settingsWindowController = controller
         }
         // Keep the notch expanded while editing so geometry / component
         // changes are visible immediately.
         windowControllers.values.forEach { $0.showExpanded() }
+        setComponentDividersInteractive(true)
         settingsWindowController?.present()
+    }
+
+    private func setComponentDividersInteractive(_ isEnabled: Bool) {
+        windowControllers.values.forEach {
+            $0.setComponentDividersInteractive(isEnabled)
+        }
     }
 
     @objc private func quit() {

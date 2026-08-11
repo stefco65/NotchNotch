@@ -290,7 +290,7 @@ Animacje respektują systemowe Reduce Motion. Standardowe czasy przejść wynosz
 
 ## 10. Widok `Notch` i układ komponentów
 
-Komponenty zajmują poziomy wiersz o wysokości 112 pt. Ich szerokości są proporcjonalne do `widthWeight`. Między kartami znajdują się 17-punktowe, wyłącznie wizualne separatory.
+Komponenty zajmują poziomy wiersz o wysokości 112 pt. Ich szerokości są proporcjonalne do `widthWeight`. Między kartami znajdują się 17-punktowe separatory: wizualne na co dzień, a gdy otwarte jest okno Ustawień — interaktywne uchwyty do przeciągania (`SettingsStore.adjustDivider`).
 
 Minimalna wymagana szerokość jest obliczana jako:
 
@@ -523,7 +523,7 @@ To zwykłe, aktywujące okno macOS, w przeciwieństwie do nieaktywującego panel
 - przesuwanie w lewo i prawo,
 - ustawianie względnej szerokości 0,5–3,0.
 
-Zmian szerokości kart nie wykonuje się bezpośrednio w panelu. `SettingsStore.adjustDivider` istnieje, ale bieżące separatory nie są interaktywne i widok go nie wywołuje.
+Zmian szerokości kart można dokonać suwakami w Ustawieniach albo przeciągając separatory w otwartym notchu, dopóki okno Ustawień jest widoczne (`allowsInteractiveComponentDividers`).
 
 #### Przyciski z aplikacji Skróty
 
@@ -765,7 +765,7 @@ Nadal wymagają ręcznej walidacji:
 4. **Nie zakładaj jednego globalnego stanu powierzchni.** Każdy ekran ma osobny kontroler i model prezentacji.
 5. **Store'y są globalnie współdzielone.** Zmiana zadania, Tray, Spotify czy Ustawień jest natychmiast widoczna na wszystkich ekranach.
 6. **Tray pozostaje otwarty celowo.** Zamykanie go kliknięciem poza panelem zniszczyłoby podstawowy przepływ pobierania plików z innych aplikacji.
-7. **Separatory komponentów są prezentacyjne.** Zmiany wag odbywają się w Ustawieniach.
+7. **Separatory komponentów stają się interaktywne przy otwartych Ustawieniach.** Poza tym trybem zmiany wag są w Ustawieniach (suwaki).
 8. **Reduce Motion jest częścią zachowania.** Nowe animacje powinny respektować to ustawienie.
 9. **Panel nie powinien konsumować kliknięć poza nim.** Jest to ważne dla wrażenia narzędzia systemowego.
 10. **Nowe funkcje należy opisać jako zaimplementowane dopiero po połączeniu UI, modelu, trwałości/uprawnień i odpowiednich testów.**
