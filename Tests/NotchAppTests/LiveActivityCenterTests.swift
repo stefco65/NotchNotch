@@ -201,7 +201,7 @@ final class LiveActivityCenterTests: XCTestCase {
         XCTAssertEqual(musicHoverDI.minX, musicDI.minX)
         XCTAssertEqual(musicHoverDI.maxX, physical.maxX)
         XCTAssertEqual(musicHoverDI.width, musicDI.width)
-        XCTAssertEqual(musicHoverDI.height, musicDI.height + 20)
+        XCTAssertEqual(musicHoverDI.height, musicDI.height + DynamicIslandLayout.idleHoverExtraHeight)
 
         let musicPreviewDI = DynamicIslandLayout.compactEnvelope(
             for: .musicPreview,
@@ -225,7 +225,10 @@ final class LiveActivityCenterTests: XCTestCase {
             idleHoverDI.width,
             physical.width + DynamicIslandLayout.idleHoverExtraWidth
         )
-        XCTAssertEqual(idleHoverDI.height, physical.height + 20)
+        XCTAssertEqual(
+            idleHoverDI.height,
+            physical.height + DynamicIslandLayout.idleHoverExtraHeight
+        )
 
         let musicBubble = DynamicIslandLayout.bubbleWindowFrame(
             adjacentTo: musicDI,

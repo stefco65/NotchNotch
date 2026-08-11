@@ -607,13 +607,13 @@ Geometrię napędza jeden `NotchGeometryAnimator` (`PresentationMetrics`: frame,
 | Stan | Szerokość bazowa | Wysokość |
 |---|---|---|
 | `collapsed` | `max(anchor.width, 120) + (Spotify ? 100 : 0)` | `max(anchor.height, 12)` |
-| `hovered` | `max(anchor.width, 120) + (Spotify ? 100 : 80)` | baza + 20 |
-| `musicPreview` | `max(anchor.width, 120) + (Spotify ? 100 : 80)` | baza + 44 |
+| `hovered` | `max(anchor.width, 120) + (Spotify ? 100 : 40)` | baza + 12 |
+| `musicPreview` | `max(anchor.width, 120) + (Spotify ? 100 : 40)` | baza + 44 |
 | `expanded` | ustawienie 520–1800, ograniczone do ekranu - 48 | 204 |
 
 Frame docelowy jest całkowany przez `.integral`; klatki pośrednie animacji mogą być połówkowe.
 
-Music + Live Activity ucina prawą krawędź kapsuły do `physical.maxX` (lewy overhang muzyki zostaje); sam idle/hover z DI pozostaje wycentrowany, a bubble dokleja się do `maxX` z overlapem.
+Music + Live Activity ucina prawą krawędź kapsuły do `physical.maxX` (lewy overhang muzyki zostaje); sam idle/hover z DI pozostaje wycentrowany. Bubble DI śledzi **żywą** prawą krawędź sylwetki (`drawnBodyMaxX` z `NotchGeometryAnimator`) w stałej odległości na każdej klatce; po wylądowaniu hovera robi lekki overshoot (~8pt) i wraca na pozycję spoczynkową. Y pozostaje na pasku fizycznego cutoutu.
 
 ## 17. Najważniejsze zależności i przepływy danych
 

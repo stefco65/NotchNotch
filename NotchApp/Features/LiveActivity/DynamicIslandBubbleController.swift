@@ -1,4 +1,5 @@
 import AppKit
+import QuartzCore
 import SwiftUI
 
 /// Detached right pill of the Dynamic Island. It sits to the right of the
@@ -6,9 +7,24 @@ import SwiftUI
 /// gap. Ordered below the notch window so the attach overlap stays hidden.
 @MainActor
 final class DynamicIslandBubbleController {
+    /// Extra travel past the resting hover edge before the settle-back.
+    nonisolated static let settleOvershoot: CGFloat = 8
+    /// Total overshoot + settle duration after the notch silhouette lands.
+    nonisolated static let settleDuration: TimeInterval = 0.34
+
     private let panel: NSPanel
     private let model = DynamicIslandBubbleModel()
     private var hostingView: PassiveHostingView<DynamicIslandBubbleView>?
+
+    private var settleTimer: Timer?
+    private var settleFromX: CGFloat = 0
+    private var settlePeakX: CGFloat = 0
+    private var settleRestX: CGFloat = 0
+    private var settleStart: CFTimeInterval = 0
+    private var settleTotalDuration: TimeInterval = 0
+    private var lastRestingHeight: CGFloat = 12
+    private var lastActivityIdentity: String?
+    private var isSettling: Bool { settleTimer != nil }
 
     init(anchorHeight: CGFloat) {
         panel = NSPanel(
@@ -40,18 +56,23 @@ final class DynamicIslandBubbleController {
         )
     }
 
-    /// Repositions the bubble against the notch's right edge and runs the
-    /// detach / reattach animation on the same duration as the notch geometry.
+    /// Repositions the bubble against the notch's right edge.
+    ///
+    /// Pass the *live* silhouette edge each animation tick so the pill stays a
+    /// constant distance from the growing notch. Optionally play a small
+    /// overshoot settle after the silhouette lands.
     func update(
         activity: LiveActivity?,
         notchFrame: CGRect,
         restingHeight: CGFloat,
         notchWindow: NSWindow?,
         isNotchExpanded: Bool,
-        animationDuration: TimeInterval
+        animationDuration: TimeInterval,
+        settleOvershoot: CGFloat = 0
     ) {
         let shouldShow = activity != nil && !isNotchExpanded
         if !shouldShow {
+            cancelSettle()
             model.isVisible = false
             if panel.isVisible {
                 panel.orderOut(nil)
@@ -67,29 +88,50 @@ final class DynamicIslandBubbleController {
 
         // Diameter / vertical padding stay locked to the resting physical height
         // so the pill never recenters when the main notch grows downward.
-        model.diameter = DynamicIslandLayout.bubbleDiameter(anchorHeight: restingHeight)
-        model.topPadding = max((restingHeight - model.diameter) / 2, 0)
-        model.attachedOffset = DynamicIslandLayout.bubbleAttachedLeadingInset()
-        model.restingOffset = DynamicIslandLayout.bubbleRestingLeadingInset(envelope: notchFrame)
+        let diameter = DynamicIslandLayout.bubbleDiameter(anchorHeight: restingHeight)
+        let topPadding = max((restingHeight - diameter) / 2, 0)
+        let attached = DynamicIslandLayout.bubbleAttachedLeadingInset()
+        let resting = DynamicIslandLayout.bubbleRestingLeadingInset(envelope: notchFrame)
+        let metricsChanged =
+            abs(model.diameter - diameter) > 0.5
+            || abs(model.topPadding - topPadding) > 0.5
+            || abs(model.attachedOffset - attached) > 0.5
+            || abs(model.restingOffset - resting) > 0.5
+            || abs(lastRestingHeight - restingHeight) > 0.5
+        model.diameter = diameter
+        model.topPadding = topPadding
+        model.attachedOffset = attached
+        model.restingOffset = resting
+        lastRestingHeight = restingHeight
+
+        let activityIdentity = activity.map(Self.activityIdentity(for:))
+        let activityChanged = activityIdentity != lastActivityIdentity
+        if activityChanged {
+            lastActivityIdentity = activityIdentity
+        }
 
         let targetFrame = DynamicIslandLayout.bubbleWindowFrame(
             adjacentTo: notchFrame,
             restingHeight: restingHeight
         )
-        // Snap only — animated setFrame on an NSHostingView panel hits the same
-        // AppKit constraint-update crash as the main notch hover path.
-        if !CGRectEqualToRect(panel.frame, targetFrame) {
-            let host = hostingView
-            host?.removeFromSuperview()
-            NSAnimationContext.beginGrouping()
-            NSAnimationContext.current.duration = 0
-            NSAnimationContext.current.allowsImplicitAnimation = false
-            panel.setFrame(targetFrame, display: false)
-            NSAnimationContext.endGrouping()
-            if let host {
-                host.frame = panel.contentView?.bounds ?? .zero
-                panel.contentView?.addSubview(host)
+
+        if settleOvershoot > 0.5 {
+            // Land on the live edge first, then drift a touch further and settle.
+            applyPanelFrame(targetFrame)
+            startSettle(
+                restFrame: targetFrame,
+                overshoot: settleOvershoot,
+                duration: Self.settleDuration
+            )
+        } else if isSettling {
+            // A trailing visibility sync must not cancel an in-flight settle.
+            // Only re-target if the notch edge itself moved.
+            if abs(targetFrame.origin.x - settleRestX) > 0.5 {
+                cancelSettle()
+                applyPanelFrame(targetFrame)
             }
+        } else {
+            applyPanelFrame(targetFrame)
         }
 
         if let notchWindow {
@@ -98,16 +140,18 @@ final class DynamicIslandBubbleController {
             panel.orderFrontRegardless()
         }
 
-        // Force a composite even when visibility is unchanged — otherwise the
-        // color/count swap waits for the next pointer-driven layout pass.
-        if let hosting = hostingView {
-            hosting.rootView = DynamicIslandBubbleView(model: model)
-            hosting.needsDisplay = true
-            hosting.displayIfNeeded()
+        let visibilityChanging = model.isVisible != shouldShow
+        // Skip SwiftUI rebuilds on pure follow-ticks — position is panel frame only.
+        if metricsChanged || activityChanged || visibilityChanging {
+            if let hosting = hostingView {
+                hosting.rootView = DynamicIslandBubbleView(model: model)
+                hosting.needsDisplay = true
+                hosting.displayIfNeeded()
+            }
+            panel.displayIfNeeded()
         }
-        panel.displayIfNeeded()
 
-        guard model.isVisible != shouldShow else { return }
+        guard visibilityChanging else { return }
         withAnimation(
             animationDuration > 0
                 ? .easeInOut(duration: animationDuration)
@@ -117,8 +161,99 @@ final class DynamicIslandBubbleController {
         }
     }
 
+    private static func activityIdentity(for activity: LiveActivity) -> String {
+        switch activity {
+        case .agents(let state, let count):
+            return "agents:\(state):\(count)"
+        case .tasks(let count):
+            return "tasks:\(count)"
+        }
+    }
+
     func close() {
+        cancelSettle()
         panel.close()
+    }
+
+    private func applyPanelFrame(_ targetFrame: CGRect) {
+        // Snap only — animated setFrame on an NSHostingView panel hits the same
+        // AppKit constraint-update crash as the main notch hover path.
+        guard !CGRectEqualToRect(panel.frame, targetFrame) else { return }
+        let host = hostingView
+        host?.removeFromSuperview()
+        NSAnimationContext.beginGrouping()
+        NSAnimationContext.current.duration = 0
+        NSAnimationContext.current.allowsImplicitAnimation = false
+        panel.setFrame(targetFrame, display: false)
+        NSAnimationContext.endGrouping()
+        if let host {
+            host.frame = panel.contentView?.bounds ?? .zero
+            panel.contentView?.addSubview(host)
+        }
+    }
+
+    private func startSettle(restFrame: CGRect, overshoot: CGFloat, duration: TimeInterval) {
+        cancelSettle()
+        guard duration > 0, overshoot > 0 else {
+            applyPanelFrame(restFrame)
+            return
+        }
+
+        settleFromX = panel.frame.origin.x
+        settleRestX = restFrame.origin.x
+        settlePeakX = restFrame.origin.x + overshoot
+        settleStart = CACurrentMediaTime()
+        settleTotalDuration = duration
+
+        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.tickSettle(restFrame: restFrame)
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        settleTimer = timer
+        tickSettle(restFrame: restFrame)
+    }
+
+    private func tickSettle(restFrame: CGRect) {
+        let elapsed = CACurrentMediaTime() - settleStart
+        let linear = settleTotalDuration > 0
+            ? min(max(elapsed / settleTotalDuration, 0), 1)
+            : 1
+
+        // 0…0.45 → ease out to peak; 0.45…1 → ease back to rest.
+        let x: CGFloat
+        if linear < 0.45 {
+            let t = Self.easeOut(linear / 0.45)
+            x = settleFromX + (settlePeakX - settleFromX) * t
+        } else {
+            let t = Self.easeInOut((linear - 0.45) / 0.55)
+            x = settlePeakX + (settleRestX - settlePeakX) * t
+        }
+
+        var frame = restFrame
+        frame.origin.x = x
+        applyPanelFrame(frame)
+
+        if linear >= 1 {
+            cancelSettle()
+            applyPanelFrame(restFrame)
+        }
+    }
+
+    private func cancelSettle() {
+        settleTimer?.invalidate()
+        settleTimer = nil
+    }
+
+    nonisolated private static func easeOut(_ t: CGFloat) -> CGFloat {
+        1 - pow(1 - t, 3)
+    }
+
+    nonisolated private static func easeInOut(_ t: CGFloat) -> CGFloat {
+        t < 0.5
+            ? 2 * t * t
+            : 1 - pow(-2 * t + 2, 2) / 2
     }
 
     private func ensureHostingAttached() {
