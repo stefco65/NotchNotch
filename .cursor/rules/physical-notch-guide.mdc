@@ -1,0 +1,9 @@
+---
+description: Ramka pomocnicza fizycznego notcha — włącz podczas pracy, wyłącz przed commit/push/pull
+alwaysApply: true
+---
+
+Przy każdych pracach agenta nad Notch / Music / DI / geometrią / animacjami stosuj skill `.cursor/skills/physical-notch-guide/SKILL.md`:
+
+1. Włącz `PhysicalNotchGuideSettings.isEnabled = true` i używaj różowej ramki jako faktycznego punktu odniesienia.
+2. Przed każdym commit, push lub pull ustaw `PhysicalNotchGuideSettings.isEnabled = false` — nie commituj włączonej ramki.

@@ -411,26 +411,58 @@ Każdy wiersz ma ikonę aplikacji i trzy liczniki:
 
 Dynamic Island / agregat pokazuje jeden bucket z priorytetem: pomarańczowy → niebieski → zielony (jeśli `stopped > 0`, zawsze pomarańczowy).
 
-Architektura monitora:
+#### Fabryka interfejsów narzędzi
 
-- `AgentToolFactory` buduje pluggable `AgentToolInterface` dla Cursor / Codex / Antigravity (łatwo dodać kolejne narzędzia),
-- każdy interfejs ma natywny enum statusów (`CursorAgentStatus`, `CodexAgentStatus`, `AntigravityAgentStatus`) mapowany na kanoniczny `AgentStatus`,
-- każdy interfejs ma `AgentToolSignalMonitor` (watchery plików stanu / WAL), który po zmianie odpala resync i odświeża liczniki oraz Dynamic Island,
+Monitor jest zbudowany wokół pluggable kontraktu w `NotchApp/Features/Agents/Interfaces/`:
+
+| Typ | Rola |
+|---|---|
+| `AgentToolFactory` | buduje zestaw narzędzi produkcyjnych (`makeDefaultTools`) albo pojedynczy tool (`make(provider:)`) |
+| `AgentToolInterface` | kontrakt jednego narzędzia: `provider`, `capabilities`, `adapter`, `signalMonitor`, `mapHookEvent` |
+| `AgentToolStatus` | natywny status narzędzia z projekcją `canonicalStatus` → `AgentStatus` / `AgentActivityState` |
+| `AgentToolSignalMonitor` | start/stop watcherów; po zmianie na dysku wywołuje `onChange` → resync |
+| `FileSystemAgentSignalMonitor` | wspólna implementacja FS watchera (debounce ~120 ms, re-attach po delete/rename) |
+| `CursorToolInterface` / `CodexToolInterface` / `AntigravityToolInterface` | konkretne narzędzia |
+
+`AgentMonitorStore` nie zna szczegółów Cursora/Codexa/Antigravity — operuje wyłącznie na `AgentToolInterface`. Testy mogą wstrzyknąć własne tools albo legacy `adapters:` (opakowane w `AdapterOnlyToolInterface` bez FS monitora).
+
+Natywne enumy statusów (mapowane na kanoniczny `AgentStatus`):
+
+- `CursorAgentStatus` — m.in. `generating` / `unfinishedRun` → `working`; `awaitingApproval` / `blocked` / `waiting` → `waitingForUser`; `completed` / `aborted` (bez niedokończonego runu) → `completed`,
+- `CodexAgentStatus` — `task_started` / `turn_started` → `working`; approval / elicitation / `turn_aborted` → `waitingForUser`; `task_complete` / `turn_complete` → `completed`,
+- `AntigravityAgentStatus` — liczbowe `StepStatus` (1/2 → `working`, 4/5/6/7 → `waitingForUser`, 3 → `completed`).
+
+#### Architektura runtime
+
 - `ApplicationPresenceMonitor` (NSWorkspace + bundle ID) wykrywa start/stop aplikacji providera,
-- adaptery (`CursorAdapter`, `CodexAdapter`, `AntigravityAdapter`) normalizują eventy i robią `resync()`,
-- `AgentStateStore` jest jedynym źródłem prawdy; liczniki są wyliczane ze snapshotów agentów,
-- IPC Unix socket (`~/Library/Application Support/NotchNook/agent-events.sock`) + CLI `agentbridge` przyjmują eventy z hooków (mapowanie kind per tool),
-- okresowa reconciliation (~1 s) oraz sygnały z monitorów naprawiają utracone eventy.
+- po starcie: `signalMonitor.start()` + `adapter.start` + `adapter.resync()` → `AgentStateStore.replaceAgents`,
+- po stopie: stop monitora i adaptera, wyczyszczenie stanu providera (liczniki UI = 0),
+- adaptery (`CursorAdapter`, `CodexAdapter`, `AntigravityAdapter`) normalizują eventy i skanują dysk,
+- `AgentStateStore` jest jedynym źródłem prawdy; liczniki i DI liczone ze snapshotów,
+- IPC Unix socket (`~/Library/Application Support/NotchNook/agent-events.sock`) + CLI `agentbridge` przyjmują eventy z hooków; kind mapuje `tool.mapHookEvent` per provider,
+- reconciliation ~1 s oraz sygnały `AgentToolSignalMonitor` naprawiają utracone eventy; `renderEpoch` wymusza odświeżenie SwiftUI bez czekania na hover.
+
+#### Dane na dysku i watchery
+
+| Provider | Źródła skanu | `watchTargets(for:)` |
+|---|---|---|
+| Codex | locki wątków, `~/.codex/state_5.sqlite`, końcówki rolloutów JSONL | katalog locków + katalog state DB |
+| Cursor | `state.vscdb` (composerData + composerHeaders) | `state.vscdb` + `-wal` + `-shm` |
+| Antigravity | `app_storage.json`, rozmowy w `~/.gemini/antigravity/conversations` | app storage + katalog conversations |
+
+Mapowanie Cursor UI: `hasBlockingPendingActions` / `hasPendingPlan` → pomarańczowy (`waitingForUser`); `unfinishedRunAt` / `generating` / aktywne bubble → niebieski (`working`). Samo `status: aborted` bez niedokończonego runu nie jest pomarańczowe.
 
 Jeżeli dana aplikacja nie działa, jej wiersz jest przygaszony, a liczniki wynoszą zero — niezależnie od wcześniejszego stanu runtime.
 
-Skaner czyta lokalne dane aplikacji:
-
-- Codex — locki aktywnych wątków, `~/.codex/state_5.sqlite` i końcówki rolloutów JSONL,
-- Cursor — bazę `state.vscdb` (composerData + composerHeaders). Status UI mapuje się jak w Cursorze: `hasBlockingPendingActions` / `hasPendingPlan` → pomarańczowy (`waitingForUser`); `unfinishedRunAt` / `generating` / aktywne bubble → niebieski (`working`). Samo `status: aborted` bez niedokończonego runu nie jest pomarańczowe,
-- Antigravity — `app_storage.json` i bazy rozmów w `~/.gemini/antigravity/conversations`.
-
 Skanowanie wykonuje się poza głównym wątkiem. Komponent tylko raportuje wykryty stan; nie steruje agentami ani nie modyfikuje ich danych.
+
+#### Dodawanie kolejnego narzędzia AI
+
+1. Dodać case do `AgentProvider` (tytuł, bundle ID, ścieżka aplikacji).
+2. Dodać `*AgentStatus: AgentToolStatus` + `*ToolInterface: AgentToolInterface` w `Interfaces/<Tool>/`.
+3. Zarejestrować w `AgentToolFactory.make(provider:)`.
+4. Dodać adapter + resync w `Providers/<Tool>/` oraz ścieżki i `watchTargets(for:)` w `AgentMonitorPaths`.
+5. Rozszerzyć mapowanie hooków (`mapHookEvent`) i testy (`AgentToolFactoryTests` + mapper/status).
 
 ### 11.8. Placeholdery `Mirror` i `SystemStatus`
 
@@ -661,6 +693,20 @@ TrayItemDragHandle (NSDraggingSource)
   → beginDraggingSession + file URL pasteboard → Finder / inna aplikacja (kopia)
 ```
 
+### Agenci AI → liczniki / Dynamic Island
+
+```text
+AgentToolFactory.makeDefaultTools
+  → AgentMonitorStore (tools[provider])
+  → ApplicationPresenceMonitor (start/stop app)
+       ├─ signalMonitor.start/stop (FS / WAL)
+       ├─ adapter.start / resync / stop
+       └─ agentbridge → AgentEventServer → tool.mapHookEvent
+  → AgentStateStore (jedyna prawda)
+  → summaries + renderEpoch
+  → AgentMonitorComponentView + Live Activity (priorytet orange → blue → green)
+```
+
 ## 18. Mapa kodu
 
 | Obszar | Plik / katalog | Odpowiedzialność |
@@ -676,9 +722,11 @@ TrayItemDragHandle (NSDraggingSource)
 | Skróty | `NotchApp/Features/Shortcuts/` | CLI `shortcuts`, runner i przyciski |
 | Zadania | `NotchApp/Features/Tasks/` | CRUD, completion delay i UI |
 | Kalendarz | `NotchApp/Features/Calendar/` | EventKit, uprawnienia, lista wydarzeń |
-| Agenci | `NotchApp/Features/Agents/` | store + adaptery + IPC + resync liczników |
+| Agenci | `NotchApp/Features/Agents/` | store, IPC, reconciliation, UI liczników |
+| interfejsy narzędzi AI | `NotchApp/Features/Agents/Interfaces/` | `AgentToolFactory`, kontrakt, statusy natywne, FS signal monitors |
+| adaptery providerów | `NotchApp/Features/Agents/Providers/` | Cursor / Codex / Antigravity: adapter + mapper + resync |
 | Tray | `NotchApp/Features/Tray/` | kopie plików, indeks, drop i karty |
-| testy | `Tests/NotchAppTests/` | geometria i logika store'ów |
+| testy | `Tests/NotchAppTests/` | geometria, store'y, `AgentToolFactoryTests` |
 | core checks | `scripts/GeometryChecks.swift` | wykonywalne asercje bez XCTest |
 
 ## 19. Testy i obecne gwarancje
@@ -695,7 +743,8 @@ Testy obejmują:
 - CRUD i opóźnione usuwanie zadań,
 - siedmiodniowy zakres kalendarza,
 - zachowanie cache okładek Spotify,
-- mapowanie stanów agentów Codex, Cursor i Antigravity.
+- mapowanie stanów agentów Codex, Cursor i Antigravity,
+- fabrykę `AgentToolInterface` (jeden tool per provider, natywne statusy, hook mapping, scoped `watchTargets`).
 
 Nadal wymagają ręcznej walidacji:
 
@@ -720,6 +769,7 @@ Nadal wymagają ręcznej walidacji:
 8. **Reduce Motion jest częścią zachowania.** Nowe animacje powinny respektować to ustawienie.
 9. **Panel nie powinien konsumować kliknięć poza nim.** Jest to ważne dla wrażenia narzędzia systemowego.
 10. **Nowe funkcje należy opisać jako zaimplementowane dopiero po połączeniu UI, modelu, trwałości/uprawnień i odpowiednich testów.**
+11. **Nowe narzędzie AI dodaje się przez `AgentToolFactory` / `AgentToolInterface`, nie przez rozgałęzianie `AgentMonitorStore`.** Natywny enum statusów mapuje się na kanoniczny `AgentStatus`; watchery i hooki zostają w interfejsie narzędzia.
 
 ## 21. Skrócone podsumowanie produktu
 
