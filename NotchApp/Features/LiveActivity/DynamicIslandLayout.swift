@@ -10,9 +10,11 @@ import Foundation
 /// the DI bubble can detach from the hardware cutout.
 enum DynamicIslandLayout {
     nonisolated static let compactExtraWidth: CGFloat = 100
-    /// Idle hover growth on a ~220pt hardware notch (~+36%) so the slide-out
-    /// reads as a real expansion, not a thin downward drip.
-    nonisolated static let idleHoverExtraWidth: CGFloat = 80
+    /// Idle hover growth — keep it modest so the slide-out doesn't dominate
+    /// the menu bar (was 80 / felt oversized on ~220pt hardware notches).
+    nonisolated static let idleHoverExtraWidth: CGFloat = 40
+    /// Extra height on idle hover (downward only).
+    nonisolated static let idleHoverExtraHeight: CGFloat = 12
     nonisolated static let splitGap: CGFloat = 2
     nonisolated static let attachOverlap: CGFloat = 10
 
@@ -41,7 +43,7 @@ enum DynamicIslandLayout {
         case .collapsed, .expanded:
             return base
         case .hovered:
-            return base + 20
+            return base + idleHoverExtraHeight
         case .musicPreview:
             // Just enough for a slightly larger artwork + marquee under it.
             return base + 44
@@ -107,7 +109,8 @@ enum DynamicIslandLayout {
     /// Compact visual frame.
     ///
     /// - Without DI: centered capsule on the physical notch.
-    /// - Idle + DI: same centered capsule; bubble hangs past `maxX`.
+    /// - Idle + DI: same centered capsule; bubble hangs past live `maxX`
+    ///   (so idle hover growth slides DI right instead of covering it).
     /// - Music + DI: left keeps the music overhang, right snaps to
     ///   `physical.maxX`. The trailing shoulder is flattened so the visible
     ///   right wall sits on the hardware cutout (DI parks there).

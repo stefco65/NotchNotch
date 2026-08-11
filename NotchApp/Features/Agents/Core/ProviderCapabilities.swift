@@ -10,7 +10,7 @@ struct ProviderCapabilities: Equatable, Sendable {
     static let cursor = ProviderCapabilities(
         supportsLiveEvents: true,
         supportsResync: true,
-        supportsPermissionState: false,
+        supportsPermissionState: true,
         supportsSubagents: false,
         supportsCompletionState: true
     )

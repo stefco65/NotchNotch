@@ -72,7 +72,7 @@ final class OverlayGeometryTests: XCTestCase {
         XCTAssertEqual(hovered.midX, collapsed.midX)
         XCTAssertEqual(hovered.maxY, collapsed.maxY)
         XCTAssertEqual(hovered.width, collapsed.width + DynamicIslandLayout.idleHoverExtraWidth)
-        XCTAssertEqual(hovered.height, collapsed.height + 20)
+        XCTAssertEqual(hovered.height, collapsed.height + DynamicIslandLayout.idleHoverExtraHeight)
     }
 
     func testMusicHoverGrowsWithoutJumpingBeforeArtworkPreview() {
@@ -94,7 +94,7 @@ final class OverlayGeometryTests: XCTestCase {
         )
 
         XCTAssertEqual(hovered.width, collapsed.width)
-        XCTAssertEqual(hovered.height, collapsed.height + 20)
+        XCTAssertEqual(hovered.height, collapsed.height + DynamicIslandLayout.idleHoverExtraHeight)
         XCTAssertEqual(hovered.width, preview.width)
         XCTAssertEqual(hovered.midX, collapsed.midX)
         XCTAssertEqual(hovered.maxY, collapsed.maxY)

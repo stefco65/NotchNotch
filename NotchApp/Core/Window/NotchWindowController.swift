@@ -221,13 +221,24 @@ final class NotchWindowController: NSWindowController {
         liveActivityCenter.activity != nil && state != .expanded
     }
 
-    /// Parks the DI bubble on the physical cutout — fixed screen position.
-    private func updateBubble(activity: LiveActivity?, duration: TimeInterval) {
+    /// Parks the DI bubble against the live notch's right edge so idle hover
+    /// growth pushes the pill right instead of covering it. Y/height stay on
+    /// the resting physical strip so the DI doesn't stretch with the notch.
+    private func updateBubble(
+        activity: LiveActivity?,
+        duration: TimeInterval,
+        settleOvershoot: CGFloat = 0
+    ) {
         let physical = DynamicIslandLayout.physicalNotchFrame(display: display)
-        // Always park against the hardware maxX / resting height so Music hover
-        // and preview never drag the pill around the menu bar.
+        let liveMaxX = liveDrawnBodyMaxX() ?? DynamicIslandLayout.compactEnvelope(
+            for: state,
+            display: display,
+            showsNowPlaying: spotifyMusicStore.hasActiveTrack,
+            showsLiveActivity: showsLiveActivity
+        ).maxX
+        // maxX follows the current silhouette; Y stays on the hardware strip.
         let parkFrame = CGRect(
-            x: physical.minX,
+            x: liveMaxX - physical.width,
             y: physical.minY,
             width: physical.width,
             height: physical.height
@@ -238,12 +249,26 @@ final class NotchWindowController: NSWindowController {
             restingHeight: max(physical.height, 12),
             notchWindow: window,
             isNotchExpanded: state == .expanded,
-            animationDuration: duration
+            animationDuration: duration,
+            settleOvershoot: settleOvershoot
         )
         physicalGuide?.show(
             physicalFrame: physical,
             relativeTo: window
         )
+    }
+
+    /// Live silhouette maxX from the in-flight geometry animator when present.
+    private func liveDrawnBodyMaxX() -> CGFloat? {
+        geometryAnimator?.presented.drawnBodyMaxX
+    }
+
+    /// True when the notch's right edge grew past the hardware cutout — DI
+    /// should settle with a tiny overshoot after tracking that edge.
+    private func shouldSettleBubbleOvershoot(for metrics: PresentationMetrics) -> Bool {
+        guard showsLiveActivity, state != .expanded else { return false }
+        let physical = DynamicIslandLayout.physicalNotchFrame(display: display)
+        return metrics.drawnBodyMaxX > physical.maxX + 0.5
     }
 
     func showExpanded() {
@@ -519,6 +544,9 @@ final class NotchWindowController: NSWindowController {
             pendingSwiftUIReveal = nil
         }
 
+        // Position is driven tick-by-tick from `applyPresentedMetrics` so DI
+        // stays glued to the live right edge. Here we only sync visibility /
+        // activity payload (settle plays on geometry completion).
         updateBubble(activity: liveActivityCenter.activity, duration: duration)
     }
 
@@ -534,6 +562,14 @@ final class NotchWindowController: NSWindowController {
 
     private func handleGeometryAnimationCompleted(_ metrics: PresentationMetrics) {
         applyPresentedMetrics(metrics)
+        let overshoot = shouldSettleBubbleOvershoot(for: metrics)
+            ? DynamicIslandBubbleController.settleOvershoot
+            : 0
+        updateBubble(
+            activity: liveActivityCenter.activity,
+            duration: 0,
+            settleOvershoot: overshoot
+        )
         guard let pending = pendingSwiftUIReveal else { return }
         pendingSwiftUIReveal = nil
 
@@ -660,6 +696,8 @@ final class NotchWindowController: NSWindowController {
             contentHeight: metrics.contentHeight,
             contentOffsetX: metrics.contentOffsetX
         )
+        // Keep DI locked to the live drawn maxX for the whole silhouette morph.
+        updateBubble(activity: liveActivityCenter.activity, duration: 0)
         // SwiftUI metrics are synced once per transition in commitPresentation.
         // Do not publish per-tick sizes/radii here.
     }

@@ -4,24 +4,11 @@ enum CodexEventMapper {
     static let recencyWindow: TimeInterval = 3600
 
     static func status(fromEventType type: String) -> AgentStatus? {
-        switch type {
-        case "task_started", "turn_started":
-            return .working
-        case "task_complete", "turn_complete":
-            return .completed
-        case "exec_approval_request",
-             "apply_patch_approval_request",
-             "request_user_input",
-             "request_permissions",
-             "elicitation_request",
-             "collab_waiting_begin":
-            return .waitingForUser
-        case "turn_aborted", "error":
-            // Surface as waiting/attention in the orange counter bucket.
-            return .waitingForUser
-        default:
-            return nil
-        }
+        CodexAgentStatus.resolve(eventType: type)?.canonicalStatus
+    }
+
+    static func nativeStatus(fromEventType type: String) -> CodexAgentStatus? {
+        CodexAgentStatus.resolve(eventType: type)
     }
 
     static func status(
@@ -42,7 +29,7 @@ enum CodexEventMapper {
             }
         }
         if let lastModified, now.timeIntervalSince(lastModified) <= 90 {
-            return .working
+            return CodexAgentStatus.recentLogActivity.canonicalStatus
         }
         return nil
     }

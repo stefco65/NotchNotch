@@ -64,15 +64,28 @@ struct AgentMonitorPaths: Sendable {
     }
 
     var watchTargets: [URL] {
-        [
-            codexThreadLocks,
-            codexStateDatabase.deletingLastPathComponent(),
-            // Cursor uses SQLite WAL — writes often hit -wal before the main file.
-            cursorStateDatabase,
-            URL(fileURLWithPath: cursorStateDatabase.path + "-wal"),
-            URL(fileURLWithPath: cursorStateDatabase.path + "-shm"),
-            antigravityAppStorage,
-            antigravityConversations
-        ]
+        AgentProvider.allCases.flatMap { watchTargets(for: $0) }
+    }
+
+    /// Filesystem roots observed by each tool's `AgentToolSignalMonitor`.
+    func watchTargets(for provider: AgentProvider) -> [URL] {
+        switch provider {
+        case .codex:
+            return [
+                codexThreadLocks,
+                codexStateDatabase.deletingLastPathComponent()
+            ]
+        case .cursor:
+            return [
+                cursorStateDatabase,
+                URL(fileURLWithPath: cursorStateDatabase.path + "-wal"),
+                URL(fileURLWithPath: cursorStateDatabase.path + "-shm")
+            ]
+        case .antigravity:
+            return [
+                antigravityAppStorage,
+                antigravityConversations
+            ]
+        }
     }
 }

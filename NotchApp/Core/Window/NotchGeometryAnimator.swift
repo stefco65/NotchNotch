@@ -20,6 +20,11 @@ struct PresentationMetrics: Equatable {
     var trailingShoulderRadius: CGFloat
     var horizontalScale: CGFloat
     var glowOpacity: CGFloat
+
+    /// Screen-space maxX of the drawn black body — the edge DI must track.
+    var drawnBodyMaxX: CGFloat {
+        frame.minX + contentOffsetX + contentWidth
+    }
 }
 
 /// Single timeline for notch geometry. Supersedes any in-flight run from the
