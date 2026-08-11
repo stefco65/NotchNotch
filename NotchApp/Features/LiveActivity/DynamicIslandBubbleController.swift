@@ -98,6 +98,15 @@ final class DynamicIslandBubbleController {
             panel.orderFrontRegardless()
         }
 
+        // Force a composite even when visibility is unchanged — otherwise the
+        // color/count swap waits for the next pointer-driven layout pass.
+        if let hosting = hostingView {
+            hosting.rootView = DynamicIslandBubbleView(model: model)
+            hosting.needsDisplay = true
+            hosting.displayIfNeeded()
+        }
+        panel.displayIfNeeded()
+
         guard model.isVisible != shouldShow else { return }
         withAnimation(
             animationDuration > 0

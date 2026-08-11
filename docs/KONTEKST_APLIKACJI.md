@@ -409,20 +409,22 @@ Każdy wiersz ma ikonę aplikacji i trzy liczniki:
 - pomarańczowy — `waitingForUser` (UI: `stopped`),
 - zielony — `completed` (UI: `done`).
 
+Dynamic Island / agregat pokazuje jeden bucket z priorytetem: pomarańczowy → niebieski → zielony (jeśli `stopped > 0`, zawsze pomarańczowy).
+
 Architektura monitora:
 
 - `ApplicationPresenceMonitor` (NSWorkspace + bundle ID) wykrywa start/stop aplikacji providera,
 - adaptery (`CursorAdapter`, `CodexAdapter`, `AntigravityAdapter`) normalizują eventy i robią `resync()`,
 - `AgentStateStore` jest jedynym źródłem prawdy; liczniki są wyliczane ze snapshotów agentów,
 - IPC Unix socket (`~/Library/Application Support/NotchNook/agent-events.sock`) + CLI `agentbridge` przyjmują eventy z hooków,
-- okresowa reconciliation (~20 s) oraz watchery plików stanu/logów naprawiają utracone eventy.
+- okresowa reconciliation (~1 s) oraz watchery plików stanu/logów (w tym SQLite WAL Cursora) naprawiają utracone eventy.
 
 Jeżeli dana aplikacja nie działa, jej wiersz jest przygaszony, a liczniki wynoszą zero — niezależnie od wcześniejszego stanu runtime.
 
 Skaner czyta lokalne dane aplikacji:
 
 - Codex — locki aktywnych wątków, `~/.codex/state_5.sqlite` i końcówki rolloutów JSONL,
-- Cursor — bazę `state.vscdb` przez `/usr/bin/sqlite3`,
+- Cursor — bazę `state.vscdb` (composerData + composerHeaders). Status UI mapuje się jak w Cursorze: `hasBlockingPendingActions` / `hasPendingPlan` → pomarańczowy (`waitingForUser`); `unfinishedRunAt` / `generating` / aktywne bubble → niebieski (`working`). Samo `status: aborted` bez niedokończonego runu nie jest pomarańczowe,
 - Antigravity — `app_storage.json` i bazy rozmów w `~/.gemini/antigravity/conversations`.
 
 Skanowanie wykonuje się poza głównym wątkiem. Komponent tylko raportuje wykryty stan; nie steruje agentami ani nie modyfikuje ich danych.

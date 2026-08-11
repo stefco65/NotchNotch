@@ -425,7 +425,23 @@ enum GeometryChecks {
         )
         precondition(AgentStatusScanner.cursorState(status: "generating") == .working)
         precondition(AgentStatusScanner.cursorState(status: "blocked") == .stopped)
+        precondition(AgentStatusScanner.cursorState(status: "aborted") == .done)
         precondition(AgentStatusScanner.cursorState(status: "none") == .done)
+        precondition(
+            AgentStatusScanner.cursorState(
+                .init(status: "aborted", hasUnfinishedRun: true)
+            ) == .working
+        )
+        precondition(
+            AgentStatusScanner.cursorState(
+                .init(status: "completed", hasUnfinishedRun: true)
+            ) == .done
+        )
+        precondition(
+            AgentStatusScanner.cursorState(
+                .init(status: "aborted", hasUnfinishedRun: true, hasBlockingPendingActions: true)
+            ) == .stopped
+        )
         precondition(AgentStatusScanner.antigravityState(status: 1) == .working)
         precondition(AgentStatusScanner.antigravityState(status: 2) == .working)
         precondition(AgentStatusScanner.antigravityState(status: 3) == .done)

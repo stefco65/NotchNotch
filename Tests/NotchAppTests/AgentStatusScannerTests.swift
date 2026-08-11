@@ -50,7 +50,7 @@ final class AgentStatusScannerTests: XCTestCase {
     func testCursorStatusMapping() {
         XCTAssertEqual(AgentStatusScanner.cursorState(status: "generating"), .working)
         XCTAssertEqual(AgentStatusScanner.cursorState(status: "blocked"), .stopped)
-        XCTAssertEqual(AgentStatusScanner.cursorState(status: "aborted"), .stopped)
+        XCTAssertEqual(AgentStatusScanner.cursorState(status: "aborted"), .done)
         XCTAssertEqual(AgentStatusScanner.cursorState(status: "completed"), .done)
         XCTAssertEqual(AgentStatusScanner.cursorState(status: "none"), .done)
     }
@@ -80,6 +80,54 @@ final class AgentStatusScannerTests: XCTestCase {
             AgentStatusScanner.cursorState(
                 .init(status: "aborted", generatingBubbleCount: 0)
             ),
+            .done
+        )
+    }
+
+    func testCursorUnfinishedRunCountsAsWorkingDespiteAbortedStatus() {
+        // Live Cursor agent turns often persist status="aborted" while
+        // unfinishedRunAt is still set — that must stay in the blue bucket.
+        XCTAssertEqual(
+            AgentStatusScanner.cursorState(
+                .init(status: "aborted", hasUnfinishedRun: true)
+            ),
+            .working
+        )
+        // Explicit completed/none win over a stale unfinishedRunAt.
+        XCTAssertEqual(
+            AgentStatusScanner.cursorState(
+                .init(status: "none", hasUnfinishedRun: true)
+            ),
+            .done
+        )
+        XCTAssertEqual(
+            AgentStatusScanner.cursorState(
+                .init(status: "completed", hasUnfinishedRun: true)
+            ),
+            .done
+        )
+    }
+
+    func testCursorBlockingPendingActionsAreOrange() {
+        // Waiting for user approval / decision beats an unfinished run.
+        XCTAssertEqual(
+            AgentStatusScanner.cursorState(
+                .init(
+                    status: "aborted",
+                    hasUnfinishedRun: true,
+                    hasBlockingPendingActions: true
+                )
+            ),
+            .stopped
+        )
+        XCTAssertEqual(
+            AgentStatusScanner.cursorState(
+                .init(status: "completed", hasPendingPlan: true)
+            ),
+            .stopped
+        )
+        XCTAssertEqual(
+            AgentStatusScanner.cursorState(status: "waiting"),
             .stopped
         )
     }
@@ -92,6 +140,11 @@ final class AgentStatusScannerTests: XCTestCase {
             state: .working, lastUpdatedAt: nil, now: now
         ))
 
+        // Waiting-for-user agents are always included (permission prompts).
+        XCTAssertTrue(AgentStatusScanner.cursorShouldInclude(
+            state: .stopped, lastUpdatedAt: nil, now: now
+        ))
+
         // Finished agents count only within the recency window.
         XCTAssertTrue(AgentStatusScanner.cursorShouldInclude(
             state: .done,
@@ -102,9 +155,6 @@ final class AgentStatusScannerTests: XCTestCase {
             state: .done,
             lastUpdatedAt: now.addingTimeInterval(-AgentStatusScanner.recencyWindow - 1),
             now: now
-        ))
-        XCTAssertFalse(AgentStatusScanner.cursorShouldInclude(
-            state: .stopped, lastUpdatedAt: nil, now: now
         ))
     }
 

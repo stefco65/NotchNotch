@@ -18,6 +18,10 @@ struct AgentMonitorComponentView: View {
             RoundedRectangle(cornerRadius: 14)
                 .stroke(.white.opacity(0.07), lineWidth: 1)
         }
+        // Epoch forces PassiveHostingView to drop a stale layer tree that otherwise
+        // only recomposites on the next hover/layout pass.
+        .id(store.renderEpoch)
+        .animation(.spring(response: 0.28, dampingFraction: 0.75), value: store.renderEpoch)
         .onAppear { store.startMonitoring() }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Otwarci agenci AI")
@@ -59,8 +63,14 @@ private struct AgentSourceRow: View {
                 ),
                 isActive: summary.isApplicationRunning
             )
+            .animation(.spring(response: 0.28, dampingFraction: 0.75), value: summary.counts)
         }
         .frame(height: 29)
+        // Force SwiftUI to diff when counts change even if the row identity is stable
+        // (hosting views inside the notch sometimes skip redraws until hover).
+        .id(
+            "\(summary.source.rawValue)-\(summary.counts.working)-\(summary.counts.stopped)-\(summary.counts.done)-\(summary.isApplicationRunning)"
+        )
         .accessibilityElement(children: .combine)
         .accessibilityLabel(
             "\(summary.source.title): \(summary.counts.working) pracujących, "
