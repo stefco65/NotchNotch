@@ -481,6 +481,61 @@ enum GeometryChecks {
             AgentStatusScanner.codexEventState(type: "exec_approval_request") == .stopped
         )
 
+        // End-to-end: AgentStateStore counters → DI highlight → bubble style.
+        do {
+            let store = AgentStateStore()
+            store.providerStarted(.cursor)
+            let instance = store.instanceID(for: .cursor)!
+            let t0 = Date(timeIntervalSince1970: 2_000)
+
+            store.handle(
+                .init(
+                    provider: .cursor,
+                    agentID: "working-1",
+                    kind: .working,
+                    timestamp: t0,
+                    providerInstanceID: instance
+                )
+            )
+            let workingHighlight = LiveActivityCenter.agentHighlight(from: store.summaries)
+            precondition(workingHighlight == .agents(state: .working, count: 1))
+            let workingStyle = DynamicIslandBubbleStyle(activity: workingHighlight!)
+            precondition(workingStyle.symbol == "bolt.fill")
+            precondition(workingStyle.count == 1)
+            precondition(workingStyle.accessibilityLabel == "Pracujący agenci: 1")
+
+            store.handle(
+                .init(
+                    provider: .cursor,
+                    agentID: "working-1",
+                    kind: .waitingForUser,
+                    timestamp: t0.addingTimeInterval(1),
+                    providerInstanceID: instance
+                )
+            )
+            let stoppedHighlight = LiveActivityCenter.agentHighlight(from: store.summaries)
+            precondition(stoppedHighlight == .agents(state: .stopped, count: 1))
+            let stoppedStyle = DynamicIslandBubbleStyle(activity: stoppedHighlight!)
+            precondition(stoppedStyle.symbol == "pause.fill")
+            precondition(stoppedStyle.count == 1)
+            precondition(stoppedStyle.accessibilityLabel == "Zatrzymani agenci: 1")
+
+            // Orange (stopped) must beat blue (working) across sources.
+            store.providerStarted(.codex)
+            let codexInstance = store.instanceID(for: .codex)!
+            store.handle(
+                .init(
+                    provider: .codex,
+                    agentID: "busy",
+                    kind: .working,
+                    timestamp: t0.addingTimeInterval(2),
+                    providerInstanceID: codexInstance
+                )
+            )
+            let priorityHighlight = LiveActivityCenter.agentHighlight(from: store.summaries)
+            precondition(priorityHighlight == .agents(state: .stopped, count: 1))
+        }
+
         let taskStore = TaskStore(
             defaults: defaults,
             completionDelay: .milliseconds(10)
