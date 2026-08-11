@@ -603,7 +603,7 @@ Geometrię napędza jeden `NotchGeometryAnimator` (`PresentationMetrics`: frame,
 |---|---|---|
 | `collapsed` | `max(anchor.width, 120) + (Spotify ? 100 : 0)` | `max(anchor.height, 12)` |
 | `hovered` | `max(anchor.width, 120) + (Spotify ? 100 : 80)` | baza + 20 |
-| `musicPreview` | `max(anchor.width, 120) + (Spotify ? 100 : 80)` | baza + 64 |
+| `musicPreview` | `max(anchor.width, 120) + (Spotify ? 100 : 80)` | baza + 44 |
 | `expanded` | ustawienie 520–1800, ograniczone do ekranu - 48 | 204 |
 
 Frame docelowy jest całkowany przez `.integral`; klatki pośrednie animacji mogą być połówkowe.

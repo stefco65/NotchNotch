@@ -65,10 +65,10 @@ final class DynamicIslandBubbleController {
             model.activity = activity
         }
 
-        // Diameter stays locked to the physical notch height so hover growth
-        // only recenters the pill vertically — it must not widen the cut.
+        // Diameter / vertical padding stay locked to the resting physical height
+        // so the pill never recenters when the main notch grows downward.
         model.diameter = DynamicIslandLayout.bubbleDiameter(anchorHeight: restingHeight)
-        model.topPadding = max((notchFrame.height - model.diameter) / 2, 0)
+        model.topPadding = max((restingHeight - model.diameter) / 2, 0)
         model.attachedOffset = DynamicIslandLayout.bubbleAttachedLeadingInset()
         model.restingOffset = DynamicIslandLayout.bubbleRestingLeadingInset(envelope: notchFrame)
 

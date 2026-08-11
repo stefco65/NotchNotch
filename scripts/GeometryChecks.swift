@@ -68,13 +68,27 @@ enum GeometryChecks {
         precondition(musicHovered == CGRect(x: 350, y: 954, width: 300, height: 46))
         precondition(musicHovered.width == playingCollapsed.width)
         precondition(
-            playingCollapsed.minX + NowPlayingLayout.artworkCenterX(
-                isPreviewExpanded: false
-            )
-                == musicHovered.minX + NowPlayingLayout.artworkCenterX(
-                    isPreviewExpanded: false
-                )
+            NowPlayingLayout.artworkCenterX
+                == NowPlayingLayout.leadingShoulder
+                + (NowPlayingLayout.sideSlotWidth - NowPlayingLayout.leadingShoulder) / 2
         )
+        precondition(
+            NowPlayingLayout.playbackRightInset
+                == NowPlayingLayout.artworkCenterX
+        )
+        precondition(
+            playingCollapsed.minX + NowPlayingLayout.artworkCenterX
+                == musicHovered.minX + NowPlayingLayout.artworkCenterX
+        )
+        // Artwork sits midway between the visible left wall (after shoulder)
+        // and the physical cutout's left edge.
+        let physicalRest = collapsed
+        let visibleLeft = playingCollapsed.minX + NowPlayingLayout.leadingShoulder
+        let artworkMid = playingCollapsed.minX + NowPlayingLayout.artworkCenterX
+        precondition(abs(artworkMid - (visibleLeft + physicalRest.minX) / 2) < 0.5)
+        let visibleRight = playingCollapsed.maxX - NowPlayingLayout.leadingShoulder
+        let playbackMid = playingCollapsed.maxX - NowPlayingLayout.playbackRightInset
+        precondition(abs(playbackMid - (visibleRight + physicalRest.maxX) / 2) < 0.5)
         precondition(
             playingCollapsed.maxX - NowPlayingLayout.playbackRightInset
                 == musicHovered.maxX - NowPlayingLayout.playbackRightInset
@@ -85,7 +99,7 @@ enum GeometryChecks {
             display: display,
             showsNowPlaying: true
         )
-        precondition(musicPreview == CGRect(x: 350, y: 910, width: 300, height: 90))
+        precondition(musicPreview == CGRect(x: 350, y: 930, width: 300, height: 70))
         precondition(musicPreview.maxY == display.frame.maxY)
         precondition(musicPreview.width == playingCollapsed.width)
         precondition(musicPreview.width == musicHovered.width)
@@ -93,9 +107,33 @@ enum GeometryChecks {
         let artworkHoverFrame = NotchWindowController.musicArtworkHoverFrame(
             in: playingCollapsed
         )
-        precondition(artworkHoverFrame == CGRect(x: 350, y: 966, width: 46, height: 40))
-        precondition(artworkHoverFrame.contains(CGPoint(x: 377, y: 982)))
-        precondition(!artworkHoverFrame.contains(CGPoint(x: 500, y: 982)))
+        let artworkHitHeight = max(NowPlayingLayout.sideSlotWidth + 8, 40)
+        precondition(
+            artworkHoverFrame
+                == CGRect(
+                    x: playingCollapsed.minX,
+                    y: playingCollapsed.maxY - artworkHitHeight,
+                    width: NowPlayingLayout.sideSlotWidth,
+                    height: artworkHitHeight
+                )
+        )
+        precondition(
+            artworkHoverFrame.contains(
+                CGPoint(x: playingCollapsed.minX + 25, y: playingCollapsed.maxY - 10)
+            )
+        )
+        precondition(!artworkHoverFrame.contains(CGPoint(x: 500, y: playingCollapsed.maxY - 10)))
+        precondition(NowPlayingLayout.artworkSize(isPreviewExpanded: false) == 24)
+        precondition(NowPlayingLayout.artworkSize(isPreviewExpanded: true) == 30)
+        precondition(
+            NowPlayingLayout.artworkCenterX
+                == NowPlayingLayout.leadingShoulder
+                + (NowPlayingLayout.sideSlotWidth - NowPlayingLayout.leadingShoulder) / 2
+        )
+        precondition(
+            NowPlayingLayout.artworkCenterX
+                == NowPlayingLayout.artworkCenterX(isPreviewExpanded: true)
+        )
 
         // Idle + DI: same centered capsule; bubble hangs past physical maxX.
         // Music + DI: keep music left overhang, clip right edge to physical.maxX.
@@ -151,7 +189,7 @@ enum GeometryChecks {
         precondition(musicPreviewDI.maxX == physical.maxX)
         precondition(musicPreviewDI.minX == musicDI.minX)
         precondition(musicPreviewDI.width == musicDI.width)
-        precondition(musicPreviewDI.height == musicDI.height + 64)
+        precondition(musicPreviewDI.height == musicDI.height + 44)
 
         // Hover bubble stays pinned to the physical cutout.
         let musicHoverBubble = DynamicIslandLayout.bubbleWindowFrame(

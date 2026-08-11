@@ -204,7 +204,7 @@ final class LiveActivityCenterTests: XCTestCase {
         XCTAssertEqual(musicPreviewDI.minX, musicDI.minX)
         XCTAssertEqual(musicPreviewDI.maxX, physical.maxX)
         XCTAssertEqual(musicPreviewDI.width, musicDI.width)
-        XCTAssertEqual(musicPreviewDI.height, musicDI.height + 64)
+        XCTAssertEqual(musicPreviewDI.height, musicDI.height + 44)
 
         let idleHoverDI = DynamicIslandLayout.compactEnvelope(
             for: .hovered,
