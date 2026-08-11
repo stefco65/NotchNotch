@@ -143,15 +143,19 @@ final class AgentStateStore: ObservableObject {
     /// Replaces runtime agents for a provider with a fresh snapshot (resync).
     func replaceAgents(_ agents: [AgentSnapshot], for provider: AgentProvider) {
         guard var state = providers[provider], state.isApplicationRunning else { return }
+        let previousCount = state.agents.count
         var mapped: [String: AgentSnapshot] = [:]
         for agent in agents {
             mapped[agent.id] = agent
         }
         state.agents = mapped
         providers[provider] = state
-        logger.notice(
-            "resync completed: \(provider.rawValue, privacy: .public) agents=\(agents.count, privacy: .public)"
-        )
+        // Avoid per-tick notice spam — only log when the visible count moves.
+        if previousCount != agents.count {
+            logger.notice(
+                "resync completed: \(provider.rawValue, privacy: .public) agents=\(agents.count, privacy: .public)"
+            )
+        }
     }
 
     func debugSnapshot() -> DebugSnapshot {

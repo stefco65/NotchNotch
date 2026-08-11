@@ -1,13 +1,47 @@
 import Foundation
 
-struct CursorResyncService: Sendable {
+/// Scans Cursor's `state.vscdb` for agentic composers.
+///
+/// Full SQL scans are expensive. We cache the last snapshot against the
+/// sqlite file-family fingerprint (db/wal/shm). Reconciliation can tick every
+/// second cheaply; a real rescan runs only when Cursor writes the store (or
+/// the FS watcher asks for one after a change).
+final class CursorResyncService: @unchecked Sendable {
     let paths: AgentMonitorPaths
+
+    private let gate = NSLock()
+    private var cachedFingerprint: String?
+    private var cachedAgents: [AgentSnapshot] = []
 
     init(paths: AgentMonitorPaths = .currentUser()) {
         self.paths = paths
     }
 
     func snapshotAgents(now: Date = Date()) -> [AgentSnapshot] {
+        let fingerprint = AgentMonitorPaths.sqliteFamilyFingerprint(paths.cursorStateDatabase)
+        gate.lock()
+        if cachedFingerprint == fingerprint {
+            let cached = cachedAgents
+            gate.unlock()
+            return cached.filter {
+                CursorEventMapper.shouldInclude(
+                    status: $0.status,
+                    lastUpdatedAt: $0.updatedAt,
+                    now: now
+                )
+            }
+        }
+        gate.unlock()
+
+        let agents = scanAgents(now: now)
+        gate.lock()
+        cachedFingerprint = fingerprint
+        cachedAgents = agents
+        gate.unlock()
+        return agents
+    }
+
+    private func scanAgents(now: Date) -> [AgentSnapshot] {
         // Prefer composerHeaders.value for unfinishedRunAt / blocking flags —
         // that head document is what Cursor uses for its own status chips.
         // Fall back to composerData fields when the header omits them.
