@@ -276,6 +276,14 @@ final class NotchWindowController: NSWindowController {
         window?.orderFrontRegardless()
     }
 
+    /// Enables drag handles between expanded component cards while Settings
+    /// is open so the user can rebalance `widthWeight` live in the notch.
+    func setComponentDividersInteractive(_ isEnabled: Bool) {
+        if model.allowsInteractiveComponentDividers != isEnabled {
+            model.allowsInteractiveComponentDividers = isEnabled
+        }
+    }
+
     func toggle() {
         transition(to: state == .expanded ? .collapsed : .expanded)
         window?.orderFrontRegardless()
@@ -879,6 +887,8 @@ private final class OverlayPresentationModel: ObservableObject {
     @Published var contentOffsetX: CGFloat = 0
     var onToggle: (() -> Void)?
     var onOpenSettings: (() -> Void)?
+    /// When Settings is open, component separators become draggable resize handles.
+    @Published var allowsInteractiveComponentDividers = false
 }
 
 private struct OverlaySurfaceView: View {
@@ -1091,6 +1101,7 @@ private struct OverlaySurfaceView: View {
             let totalDividerWidth = dividerWidth * CGFloat(max(components.count - 1, 0))
             let availableWidth = max(geometry.size.width - totalDividerWidth, 1)
             let totalWeight = max(components.reduce(0) { $0 + $1.widthWeight }, 0.5)
+            let dividersInteractive = model.allowsInteractiveComponentDividers
 
             HStack(spacing: 0) {
                 ForEach(Array(components.enumerated()), id: \.element.id) { index, component in
@@ -1098,10 +1109,34 @@ private struct OverlaySurfaceView: View {
                         .frame(
                             width: availableWidth * CGFloat(component.widthWeight / totalWeight)
                         )
+                        .transaction { transaction in
+                            // Width follows the finger directly — no layout spring.
+                            if dividersInteractive {
+                                transaction.animation = nil
+                            }
+                        }
 
                     if index < components.count - 1 {
-                        PanelComponentDivider()
-                            .frame(width: dividerWidth)
+                        let right = components[index + 1]
+                        PanelComponentDivider(
+                            isInteractive: dividersInteractive,
+                            availableWidth: availableWidth,
+                            totalWeight: totalWeight,
+                            leftWeight: component.widthWeight,
+                            rightWeight: right.widthWeight,
+                            onPreview: { leftWeight, rightWeight in
+                                settingsStore.previewDividerWeights(
+                                    leftID: component.id,
+                                    rightID: right.id,
+                                    leftWeight: leftWeight,
+                                    rightWeight: rightWeight
+                                )
+                            },
+                            onCommit: {
+                                settingsStore.commitComponentLayout()
+                            }
+                        )
+                        .frame(width: dividerWidth)
                     }
                 }
             }
@@ -1491,11 +1526,67 @@ private struct CompactPlaybackIndicator: View {
 }
 
 private struct PanelComponentDivider: View {
+    var isInteractive: Bool = false
+    var availableWidth: CGFloat = 1
+    var totalWeight: Double = 1
+    var leftWeight: Double = 1
+    var rightWeight: Double = 1
+    var onPreview: ((_ leftWeight: Double, _ rightWeight: Double) -> Void)?
+    var onCommit: (() -> Void)?
+
+    @State private var isDragging = false
+    @State private var dragStartLeft: Double?
+    @State private var dragStartRight: Double?
+
     var body: some View {
-        Rectangle()
-            .fill(.white.opacity(0.16))
-            .frame(width: 1, height: 88)
-            .accessibilityHidden(true)
+        ZStack {
+            Capsule()
+                .fill(.white.opacity(lineOpacity))
+                .frame(width: isInteractive ? 2 : 1, height: 88)
+
+            if isInteractive {
+                Color.clear
+                    .contentShape(Rectangle())
+                    .highPriorityGesture(
+                        DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                            .onChanged { value in
+                                if dragStartLeft == nil || dragStartRight == nil {
+                                    isDragging = true
+                                    dragStartLeft = leftWeight
+                                    dragStartRight = rightWeight
+                                }
+                                guard let startLeft = dragStartLeft,
+                                      let startRight = dragStartRight else { return }
+
+                                let deltaWeight = Double(value.translation.width / max(availableWidth, 1))
+                                    * totalWeight
+                                onPreview?(startLeft + deltaWeight, startRight - deltaWeight)
+                            }
+                            .onEnded { _ in
+                                isDragging = false
+                                dragStartLeft = nil
+                                dragStartRight = nil
+                                onCommit?()
+                            }
+                    )
+                    .onHover { hovering in
+                        if hovering {
+                            NSCursor.resizeLeftRight.push()
+                        } else if !isDragging {
+                            NSCursor.pop()
+                        }
+                    }
+                    .accessibilityLabel("Zmień podział komponentów")
+                    .accessibilityAddTraits(.isButton)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityHidden(!isInteractive)
+    }
+
+    private var lineOpacity: Double {
+        if !isInteractive { return 0.16 }
+        return isDragging ? 0.55 : 0.34
     }
 }
 
