@@ -8,30 +8,58 @@ struct CursorResyncService: Sendable {
     }
 
     func snapshotAgents(now: Date = Date()) -> [AgentSnapshot] {
+        // Prefer composerHeaders.value for unfinishedRunAt / blocking flags —
+        // that head document is what Cursor uses for its own status chips.
+        // Fall back to composerData fields when the header omits them.
         let sql = """
         SELECT substr(k.key, 14),
                COALESCE(json_extract(k.value, '$.status'), 'none'),
-               COALESCE(json_extract(k.value, '$.lastUpdatedAt'), json_extract(k.value, '$.createdAt'), 0),
+               COALESCE(
+                   json_extract(k.value, '$.lastUpdatedAt'),
+                   json_extract(h.value, '$.lastUpdatedAt'),
+                   json_extract(k.value, '$.createdAt'),
+                   h.lastUpdatedAt,
+                   0
+               ),
                COALESCE(json_array_length(json_extract(k.value, '$.generatingBubbleIds')), 0),
-               COALESCE(json_extract(k.value, '$.isContinuationInProgress'), 0)
+               COALESCE(json_extract(k.value, '$.isContinuationInProgress'), 0),
+               CASE
+                   WHEN json_extract(h.value, '$.unfinishedRunAt') IS NOT NULL THEN 1
+                   WHEN json_extract(k.value, '$.unfinishedRunAt') IS NOT NULL THEN 1
+                   ELSE 0
+               END,
+               CASE
+                   WHEN COALESCE(json_extract(h.value, '$.hasBlockingPendingActions'), 0) IN (1, 'true') THEN 1
+                   WHEN COALESCE(json_extract(k.value, '$.hasBlockingPendingActions'), 0) IN (1, 'true') THEN 1
+                   ELSE 0
+               END,
+               CASE
+                   WHEN COALESCE(json_extract(h.value, '$.hasPendingPlan'), 0) IN (1, 'true') THEN 1
+                   WHEN COALESCE(json_extract(k.value, '$.hasPendingPlan'), 0) IN (1, 'true') THEN 1
+                   ELSE 0
+               END
         FROM cursorDiskKV k
         LEFT JOIN composerHeaders h ON h.composerId = substr(k.key, 14)
         WHERE k.key LIKE 'composerData:%'
           AND COALESCE(json_extract(k.value, '$.isAgentic'), 0) = 1
           AND COALESCE(json_extract(k.value, '$.isDraft'), 0) = 0
+          AND COALESCE(json_extract(h.value, '$.isDraft'), 0) = 0
           AND COALESCE(h.isArchived, 0) = 0;
         """
 
         var agents: [AgentSnapshot] = []
         for row in SQLiteReadOnly.query(database: paths.cursorStateDatabase, sql: sql) {
-            guard row.count >= 5 else { continue }
+            guard row.count >= 8 else { continue }
             let agentID = row[0]
             guard !agentID.isEmpty else { continue }
 
             let signals = CursorEventMapper.ComposerSignals(
                 status: row[1],
                 generatingBubbleCount: Int(row[3]) ?? 0,
-                isContinuationInProgress: row[4] == "1" || row[4] == "true"
+                isContinuationInProgress: row[4] == "1" || row[4] == "true",
+                hasUnfinishedRun: row[5] == "1" || row[5] == "true",
+                hasBlockingPendingActions: row[6] == "1" || row[6] == "true",
+                hasPendingPlan: row[7] == "1" || row[7] == "true"
             )
             let status = CursorEventMapper.status(from: signals)
             let lastUpdatedAt = Double(row[2]).flatMap { value -> Date? in

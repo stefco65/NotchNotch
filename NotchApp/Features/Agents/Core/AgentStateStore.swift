@@ -48,7 +48,6 @@ final class AgentStateStore: ObservableObject {
         state.agents.removeAll()
         providers[provider] = state
         logger.notice("provider launched: \(provider.rawValue, privacy: .public) instance=\(state.instanceID.uuidString, privacy: .public)")
-        objectWillChange.send()
     }
 
     func providerStopped(_ provider: AgentProvider) {
@@ -57,7 +56,6 @@ final class AgentStateStore: ObservableObject {
         state.agents.removeAll()
         providers[provider] = state
         logger.notice("provider terminated: \(provider.rawValue, privacy: .public)")
-        objectWillChange.send()
     }
 
     func instanceID(for provider: AgentProvider) -> UUID? {
@@ -100,7 +98,6 @@ final class AgentStateStore: ObservableObject {
             if state.agents.removeValue(forKey: event.agentID) != nil {
                 providers[event.provider] = state
                 logger.notice("agent removed: \(event.provider.rawValue, privacy: .public)/\(event.agentID, privacy: .public)")
-                objectWillChange.send()
             }
             return
         }
@@ -141,7 +138,6 @@ final class AgentStateStore: ObservableObject {
                 "agent state changed: \(event.provider.rawValue, privacy: .public)/\(event.agentID, privacy: .public) -> \(nextStatus.rawValue, privacy: .public)"
             )
         }
-        objectWillChange.send()
     }
 
     /// Replaces runtime agents for a provider with a fresh snapshot (resync).
@@ -156,7 +152,6 @@ final class AgentStateStore: ObservableObject {
         logger.notice(
             "resync completed: \(provider.rawValue, privacy: .public) agents=\(agents.count, privacy: .public)"
         )
-        objectWillChange.send()
     }
 
     func debugSnapshot() -> DebugSnapshot {

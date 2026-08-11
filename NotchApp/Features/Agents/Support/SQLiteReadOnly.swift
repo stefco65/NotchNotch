@@ -67,7 +67,10 @@ struct AgentMonitorPaths: Sendable {
         [
             codexThreadLocks,
             codexStateDatabase.deletingLastPathComponent(),
+            // Cursor uses SQLite WAL — writes often hit -wal before the main file.
             cursorStateDatabase,
+            URL(fileURLWithPath: cursorStateDatabase.path + "-wal"),
+            URL(fileURLWithPath: cursorStateDatabase.path + "-shm"),
             antigravityAppStorage,
             antigravityConversations
         ]

@@ -3,8 +3,8 @@ import Foundation
 
 /// One piece of "live" information the dynamic-island bubble can display.
 enum LiveActivity: Equatable, Sendable {
-    /// Aggregated agent state across all sources. Bucket priority inside the
-    /// agents component: working (blue) > stopped (orange) > done (green).
+    /// Aggregated agent state across all sources. Bucket priority:
+    /// stopped / waiting (orange) > working (blue) > done (green).
     case agents(state: AgentActivityState, count: Int)
     /// Number of open tasks on the task list.
     case tasks(count: Int)
@@ -56,6 +56,7 @@ final class LiveActivityCenter: ObservableObject {
             .map(Self.agentHighlight(from:))
             .removeDuplicates()
             .dropFirst()
+            .receive(on: RunLoop.main)
             .sink { [weak self] highlight in
                 MainActor.assumeIsolated {
                     guard let self else { return }
@@ -100,7 +101,7 @@ final class LiveActivityCenter: ObservableObject {
     // MARK: - Pure decision logic (unit-tested)
 
     /// Collapses all per-source agent counts into the single most important
-    /// bucket for the Agents component / DI: working > stopped > done.
+    /// bucket for the Agents component / DI: stopped > working > done.
     nonisolated static func agentHighlight(from summaries: [AgentSourceSummary]) -> LiveActivity? {
         var totals = AgentCounts()
         for summary in summaries where summary.isApplicationRunning {
@@ -108,8 +109,8 @@ final class LiveActivityCenter: ObservableObject {
             totals.stopped += summary.counts.stopped
             totals.done += summary.counts.done
         }
-        if totals.working > 0 { return .agents(state: .working, count: totals.working) }
         if totals.stopped > 0 { return .agents(state: .stopped, count: totals.stopped) }
+        if totals.working > 0 { return .agents(state: .working, count: totals.working) }
         if totals.done > 0 { return .agents(state: .done, count: totals.done) }
         return nil
     }

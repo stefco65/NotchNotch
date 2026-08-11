@@ -17,18 +17,18 @@ final class LiveActivityCenterTests: XCTestCase {
         )
     }
 
-    func testAgentHighlightPrefersWorkingThenStoppedThenDone() {
+    func testAgentHighlightPrefersStoppedThenWorkingThenDone() {
         XCTAssertEqual(
             LiveActivityCenter.agentHighlight(from: [
                 summary(.codex, working: 2, stopped: 1, done: 3)
             ]),
-            .agents(state: .working, count: 2)
+            .agents(state: .stopped, count: 1)
         )
         XCTAssertEqual(
             LiveActivityCenter.agentHighlight(from: [
-                summary(.codex, stopped: 1, done: 3)
+                summary(.codex, working: 2, done: 3)
             ]),
-            .agents(state: .stopped, count: 1)
+            .agents(state: .working, count: 2)
         )
         XCTAssertEqual(
             LiveActivityCenter.agentHighlight(from: [
@@ -45,6 +45,14 @@ final class LiveActivityCenterTests: XCTestCase {
             summary(.antigravity, working: 9, isRunning: false)
         ])
         XCTAssertEqual(highlight, .agents(state: .working, count: 3))
+    }
+
+    func testAgentHighlightOrangeBeatsBlueAcrossSources() {
+        let highlight = LiveActivityCenter.agentHighlight(from: [
+            summary(.codex, working: 4),
+            summary(.cursor, stopped: 1)
+        ])
+        XCTAssertEqual(highlight, .agents(state: .stopped, count: 1))
     }
 
     func testAgentHighlightIsNilWithoutAnyAgents() {

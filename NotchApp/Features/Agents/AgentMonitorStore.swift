@@ -13,7 +13,9 @@ final class AgentMonitorStore: ObservableObject {
 
     private let paths: AgentMonitorPaths
     private let presenceMonitor = ApplicationPresenceMonitor()
-    private let reconciliation = AgentReconciliationService(intervalSeconds: 20)
+    // Cursor status chips change several times per turn; keep this tight so
+    // the Agents component / DI update without waiting for a hover redraw.
+    private let reconciliation = AgentReconciliationService(intervalSeconds: 1)
     private let eventServer = AgentEventServer()
 
     private var adapters: [AgentProvider: any AgentProviderAdapter] = [:]
@@ -24,6 +26,10 @@ final class AgentMonitorStore: ObservableObject {
     private var hasStarted = false
     private var isResyncing = false
     private var resyncRequested = false
+
+    /// Bumped on every summaries publish so AppKit-hosted SwiftUI cannot keep
+    /// a stale render until the next pointer/layout pass.
+    @Published private(set) var renderEpoch: UInt64 = 0
 
     init(
         stateStore: AgentStateStore? = nil,
@@ -48,12 +54,10 @@ final class AgentMonitorStore: ObservableObject {
             }
         }
 
-        storeCancellable = resolvedStore.objectWillChange
-            .receive(on: DispatchQueue.main)
+        storeCancellable = resolvedStore.$providers
+            .receive(on: RunLoop.main)
             .sink { [weak self] _ in
-                MainActor.assumeIsolated {
-                    self?.publishSummaries()
-                }
+                self?.publishSummaries()
             }
         publishSummaries()
     }
@@ -239,8 +243,8 @@ final class AgentMonitorStore: ObservableObject {
                     self.fsWatchers[path]?.cancel()
                     self.fsWatchers[path] = nil
                 }
-                // Cursor/Codex write bursts are frequent — coalesce hard.
-                self.scheduleResync(debounceMs: 250)
+                // Cursor WAL bursts are frequent — coalesce, but stay snappy.
+                self.scheduleResync(debounceMs: 120)
             }
         }
         source.setCancelHandler { close(fd) }
@@ -252,8 +256,8 @@ final class AgentMonitorStore: ObservableObject {
 
     private func publishSummaries() {
         let next = stateStore.summaries
-        if next != summaries {
-            summaries = next
-        }
+        guard next != summaries else { return }
+        summaries = next
+        renderEpoch &+= 1
     }
 }

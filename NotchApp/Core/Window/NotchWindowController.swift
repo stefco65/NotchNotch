@@ -29,6 +29,7 @@ final class NotchWindowController: NSWindowController {
     private let logger = AppLogger.window
     private var spotifyPlaybackCancellable: AnyCancellable?
     private var liveActivityCancellable: AnyCancellable?
+    private var agentMonitorCancellable: AnyCancellable?
     private var surfaceHostView: SolidBlackNotchHostingView<OverlaySurfaceView>?
     private var bubbleController: DynamicIslandBubbleController?
     private var physicalGuide: PhysicalNotchGuideController?
@@ -160,10 +161,34 @@ final class NotchWindowController: NSWindowController {
             .sink { [weak self] activity in
                 MainActor.assumeIsolated {
                     guard let self else { return }
-                    // Live activity detaches to the right of a fixed notch —
-                    // refresh so the bubble tracks state without shifting the body.
-                    self.model.showsLiveActivity = activity != nil && self.state != .expanded
-                    self.refreshGeometry()
+                    let shouldShow = activity != nil && self.state != .expanded
+                    let presenceChanged = self.model.showsLiveActivity != shouldShow
+                    self.model.showsLiveActivity = shouldShow
+                    // Activity color/count changes must update the bubble without
+                    // waiting for a hover-driven geometry pass.
+                    if presenceChanged {
+                        self.refreshGeometry()
+                    } else {
+                        self.updateBubble(activity: activity, duration: 0.22)
+                    }
+                    self.surfaceHostView?.needsDisplay = true
+                    self.surfaceHostView?.displayIfNeeded()
+                }
+            }
+
+        agentMonitorCancellable = agentMonitorStore.$renderEpoch
+            .removeDuplicates()
+            .dropFirst()
+            .sink { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    // Expanded agents counters live in PassiveHostingView — kick a
+                    // display pass so numbers refresh without pointer motion.
+                    self.surfaceHostView?.needsDisplay = true
+                    self.surfaceHostView?.layer?.setNeedsDisplay()
+                    self.surfaceHostView?.displayIfNeeded()
+                    self.window?.contentView?.needsDisplay = true
+                    self.window?.displayIfNeeded()
                 }
             }
     }
