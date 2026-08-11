@@ -4,6 +4,7 @@ import CoreGraphics
 /// Dev-only outline of the hardware / virtual notch cutout. Gated by
 /// `PhysicalNotchGuideSettings.isEnabled` — agents turn it on while aligning
 /// geometry and must turn it off before commit / push / pull.
+@MainActor
 enum PhysicalNotchGuideSettings {
     /// Agent workflow: `true` during Notch/Music/DI work; `false` before git.
     static var isEnabled = false
@@ -46,9 +47,8 @@ final class PhysicalNotchGuideController {
 
     func show(physicalFrame: CGRect, relativeTo notchWindow: NSWindow?) {
         guard PhysicalNotchGuideSettings.isEnabled else {
-            if panel.isVisible {
-                panel.orderOut(nil)
-            }
+            // Always hide — do not leave a stale pink outline on screen.
+            panel.orderOut(nil)
             return
         }
 

@@ -19,6 +19,7 @@ Przełącznik:
 
 ```swift
 // NotchApp/Core/Window/PhysicalNotchGuideController.swift
+@MainActor
 enum PhysicalNotchGuideSettings {
     /// Agent: `true` w trakcie pracy; `false` przed commit / push / pull.
     static var isEnabled = false
