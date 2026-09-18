@@ -69,6 +69,8 @@ struct AgentMonitorPaths: Sendable {
     let cursorStateDatabase: URL
     let antigravityAppStorage: URL
     let antigravityConversations: URL
+    let claudeSessions: URL
+    let claudeProjects: URL
 
     static func currentUser(homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser) -> Self {
         Self(
@@ -82,7 +84,9 @@ struct AgentMonitorPaths: Sendable {
             ),
             antigravityConversations: homeDirectory.appendingPathComponent(
                 ".gemini/antigravity/conversations"
-            )
+            ),
+            claudeSessions: homeDirectory.appendingPathComponent(".claude/sessions"),
+            claudeProjects: homeDirectory.appendingPathComponent(".claude/projects")
         )
     }
 
@@ -109,6 +113,8 @@ struct AgentMonitorPaths: Sendable {
                 antigravityAppStorage,
                 antigravityConversations
             ]
+        case .claude:
+            return [claudeSessions]
         }
     }
 

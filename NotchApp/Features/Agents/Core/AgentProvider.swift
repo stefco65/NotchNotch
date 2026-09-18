@@ -4,6 +4,7 @@ enum AgentProvider: String, Codable, CaseIterable, Identifiable, Sendable {
     case codex
     case antigravity
     case cursor
+    case claude
 
     var id: String { rawValue }
 
@@ -12,6 +13,7 @@ enum AgentProvider: String, Codable, CaseIterable, Identifiable, Sendable {
         case .codex: "Codex"
         case .antigravity: "Antigravity"
         case .cursor: "Cursor"
+        case .claude: "Claude"
         }
     }
 
@@ -20,6 +22,7 @@ enum AgentProvider: String, Codable, CaseIterable, Identifiable, Sendable {
         case .codex: "com.openai.codex"
         case .antigravity: "com.google.antigravity"
         case .cursor: "com.todesktop.230313mzl4w4u92"
+        case .claude: "com.anthropic.claudefordesktop"
         }
     }
 
@@ -28,6 +31,7 @@ enum AgentProvider: String, Codable, CaseIterable, Identifiable, Sendable {
         case .codex: "/Applications/ChatGPT.app"
         case .antigravity: "/Applications/Antigravity.app"
         case .cursor: "/Applications/Cursor.app"
+        case .claude: "/Applications/Claude.app"
         }
     }
 }

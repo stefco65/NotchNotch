@@ -31,6 +31,7 @@ Głównym celem produktu jest zapewnienie szybkiego dostępu do małych informac
 - kompaktowy podgląd Spotify i pełny komponent Spotify,
 - zakładka `Notch` z konfigurowalnymi komponentami,
 - zakładka `Tray` przyjmująca pliki i foldery przez drop,
+- zakładka `Photos` pokazująca zrzuty ekranu z folderu, do którego macOS je zapisuje (folder wybierany w Ustawieniach),
 - komponenty: Muzyka, Skróty, Zadania, Agenci AI i Kalendarz,
 - placeholdery komponentów Lustro i System,
 - trwałe ustawienia panelu w `UserDefaults`,
@@ -219,16 +220,16 @@ Pełna powierzchnia ma 204 pt wysokości i szerokość wynikającą z Ustawień,
 Widok zawiera:
 
 - dekoracyjny uchwyt w formie kapsuły,
-- przełącznik zakładek `Notch` / `Tray`,
+- przełącznik zakładek `Notch` / `Tray` / `Photos`,
 - przycisk zębatki otwierający Ustawienia,
 - zawartość aktualnej zakładki,
-- dodatkowy przycisk `Close` tylko w zakładce Tray.
+- dodatkowy przycisk `Close` w zakładkach Tray i Photos.
 
 W tym stanie hover nie zmienia geometrii i nie pokazuje poświaty.
 
 ## 7. Drugi poziom stanu: zakładki pełnego panelu
 
-`OverlayPresentationModel.ExpandedTab` ma dwa przypadki:
+`OverlayPresentationModel.ExpandedTab` ma trzy przypadki:
 
 ### 7.1. `notch`
 
@@ -237,6 +238,10 @@ Pokazuje skonfigurowane komponenty w jednym poziomym wierszu. Kliknięcie poza p
 ### 7.2. `tray`
 
 Pokazuje półkę na pliki. Kliknięcia poza panelem **nie zamykają** powierzchni, ponieważ użytkownik ma móc przejść do Findera lub innej aplikacji i przeciągnąć plik do Tray. Do zamknięcia służy przycisk `Close`, toggle z menu lub programowe `Collapse`.
+
+### 7.3. `photos`
+
+Pokazuje zrzuty ekranu (`PhotosView`). Tak jak Tray (`ExpandedTab.keepsNotchOpen`) nie zamyka się po kliknięciu poza panelem, żeby zrzut dało się przeciągnąć do innej aplikacji.
 
 Wybrana zakładka nie jest resetowana podczas zwijania. Ponowne otwarcie danej nakładki pokazuje ostatnio wybraną zakładkę. Stan ten nie jest zapisywany między uruchomieniami aplikacji.
 
@@ -397,11 +402,12 @@ Wiersz wydarzenia pokazuje kolor kalendarza, tytuł i godzinę startu albo „ca
 
 ### 11.7. `AgentMonitorComponentView` — Agenci AI
 
-Pokazuje po jednym wierszu dla:
+Pokazuje po jednym wierszu dla każdego agenta włączonego w Ustawieniach (domyślnie wszystkich):
 
 - Codex,
 - Google Antigravity,
-- Cursor.
+- Cursor,
+- Claude (Claude.app oraz sesje Claude Code uruchomione w terminalu).
 
 Każdy wiersz ma ikonę aplikacji i trzy liczniki:
 
@@ -410,6 +416,8 @@ Każdy wiersz ma ikonę aplikacji i trzy liczniki:
 - zielony — `completed` (UI: `done`).
 
 Dynamic Island / agregat pokazuje jeden bucket z priorytetem: pomarańczowy → niebieski → zielony (jeśli `stopped > 0`, zawsze pomarańczowy).
+
+Wiersze dzielą stałą wysokość karty (112 pt; maks. 29 pt na wiersz), więc mieści się dowolna liczba włączonych agentów. Ikona ma stały rozmiar 20 pt. Gdy nazwy nie mieszczą się we wszystkich wierszach, są ukrywane w całej karcie (`ViewThatFits`), a w bardzo wąskiej karcie liczniki zwężają się i tracą symbol. Widok nie resetuje tożsamości przy każdej publikacji, dzięki czemu liczniki animują zmianę wartości.
 
 #### Fabryka interfejsów narzędzi
 
@@ -422,7 +430,8 @@ Monitor jest zbudowany wokół pluggable kontraktu w `NotchApp/Features/Agents/I
 | `AgentToolStatus` | natywny status narzędzia z projekcją `canonicalStatus` → `AgentStatus` / `AgentActivityState` |
 | `AgentToolSignalMonitor` | start/stop watcherów; po zmianie na dysku wywołuje `onChange` → resync |
 | `FileSystemAgentSignalMonitor` | wspólna implementacja FS watchera (debounce ~120 ms, re-attach po delete/rename) |
-| `CursorToolInterface` / `CodexToolInterface` / `AntigravityToolInterface` | konkretne narzędzia |
+| `detachedSessionProbe` | opcjonalna sonda (poza main actorem) dla narzędzi działających bez swojej aplikacji, np. CLI w terminalu |
+| `CursorToolInterface` / `CodexToolInterface` / `AntigravityToolInterface` / `ClaudeToolInterface` | konkretne narzędzia |
 
 `AgentMonitorStore` nie zna szczegółów Cursora/Codexa/Antigravity — operuje wyłącznie na `AgentToolInterface`. Testy mogą wstrzyknąć własne tools albo legacy `adapters:` (opakowane w `AdapterOnlyToolInterface` bez FS monitora).
 
@@ -430,11 +439,13 @@ Natywne enumy statusów (mapowane na kanoniczny `AgentStatus`):
 
 - `CursorAgentStatus` — m.in. `generating` / `unfinishedRun` → `working`; `awaitingApproval` / `blocked` / `waiting` → `waitingForUser`; `completed` / `aborted` (bez niedokończonego runu) → `completed`,
 - `CodexAgentStatus` — `task_started` / `turn_started` → `working`; approval / elicitation / `turn_aborted` → `waitingForUser`; `task_complete` / `turn_complete` → `completed`,
-- `AntigravityAgentStatus` — liczbowe `StepStatus` (1/2 → `working`, 4/5/6/7 → `waitingForUser`, 3 → `completed`).
+- `AntigravityAgentStatus` — liczbowe `StepStatus` (1/2 → `working`, 4/5/6/7 → `waitingForUser`, 3 → `completed`),
+- `ClaudeAgentStatus` — `busy` → `working`; `waiting` (prompt uprawnień, dialog, elicitation) → `waitingForUser`; `idle` po zakończonej turze → `completed`; dla starszych wersji bez `status` świeży zapis transkryptu → `working`.
 
 #### Architektura runtime
 
-- `ApplicationPresenceMonitor` (NSWorkspace + bundle ID) wykrywa start/stop aplikacji providera,
+- `ApplicationPresenceMonitor` (NSWorkspace + bundle ID) wykrywa start/stop aplikacji providera; dla providerów z `detachedSessionProbe` (Claude) obecność = aplikacja działa **lub** sonda widzi żywe sesje; sonda jest odpytywana przy starcie i w każdym ticku reconciliation,
+- `AgentMonitorStore.setEnabledProviders` (z `SettingsStore.visibleAgentProviders`) wyłącza providerów: nie są monitorowani, ich eventy IPC są ignorowane, a `summaries` (komponent + Dynamic Island) ich nie zawierają,
 - po starcie: `signalMonitor.start()` + `adapter.start` + `adapter.resync()` → `AgentStateStore.replaceAgents`,
 - po stopie: stop monitora i adaptera, wyczyszczenie stanu providera (liczniki UI = 0),
 - adaptery (`CursorAdapter`, `CodexAdapter`, `AntigravityAdapter`) normalizują eventy i skanują dysk,
@@ -449,6 +460,7 @@ Natywne enumy statusów (mapowane na kanoniczny `AgentStatus`):
 | Codex | locki wątków, `~/.codex/state_5.sqlite`, końcówki rolloutów JSONL | katalog locków + katalog state DB |
 | Cursor | `state.vscdb` (composerData + composerHeaders) | `state.vscdb` + `-wal` + `-shm` |
 | Antigravity | `app_storage.json`, rozmowy w `~/.gemini/antigravity/conversations` | app storage + katalog conversations |
+| Claude | rejestr sesji `~/.claude/sessions/<pid>.json` (pomijane: martwy PID, PID z czasem startu późniejszym niż sesja, `spare`, `parkedJobId`); dla sesji bez `status` mtime `~/.claude/projects/<cwd>/<sessionId>.jsonl` | katalog sessions |
 
 Mapowanie Cursor UI: `hasBlockingPendingActions` / `hasPendingPlan` → pomarańczowy (`waitingForUser`); `unfinishedRunAt` / `generating` / aktywne bubble → niebieski (`working`). Samo `status: aborted` bez niedokończonego runu nie jest pomarańczowe.
 
@@ -496,6 +508,15 @@ Karta pokazuje systemową ikonę pliku, nazwę, rozmiar lub oznaczenie Folder or
 
 Kartę można przeciągnąć do Findera lub innej aplikacji przez natywny AppKit `NSDraggingSource` (`TrayItemDragHandle`) — SwiftUI `.draggable` nie startuje wiarygodnie z `nonactivatingPanel`. Menu kontekstowe oferuje „Kopiuj” oraz „Pokaż w Finderze”. Drop z powrotem na Tray ignoruje URL-e już zarządzane przez storage.
 
+### 11.9a. `PhotosView` — zrzuty ekranu
+
+Źródłem jest folder zapisu zrzutów macOS: `com.apple.screencapture` → `location` (to samo, co „Zapisz w” w opcjach ⇧⌘5; brak wartości oznacza Biurko). `ScreenshotStore` pokazuje pliki graficzne z tego folderu oznaczone atrybutem `com.apple.metadata:kMDItemIsScreenCapture` (inne obrazy są pomijane), najnowsze pierwsze, maks. 60.
+
+- folder jest obserwowany (`DispatchSource` na katalogu) tylko, gdy zakładka jest widoczna; przy każdym pokazaniu store synchronizuje folder z ustawieniem systemowym,
+- kafelek folderu otwiera folder w Finderze,
+- karta: miniatura QuickLook (16:10, dopasowana do wysokości zakładki) i data; kliknięcie otwiera zrzut, przeciągnięcie kopiuje plik (`TrayItemDragHandle` z `onClick`), menu kontekstowe: „Otwórz”, „Kopiuj obraz”, „Pokaż w Finderze”,
+- pusty stan podpowiada skróty ⇧⌘3 / ⇧⌘4 / ⇧⌘5.
+
 ### 11.10. `SettingsRootView` — Ustawienia
 
 To zwykłe, aktywujące okno macOS, w przeciwieństwie do nieaktywującego panelu notcha. Ma sekcje:
@@ -524,6 +545,17 @@ To zwykłe, aktywujące okno macOS, w przeciwieństwie do nieaktywującego panel
 - ustawianie względnej szerokości 0,5–3,0.
 
 Zmian szerokości kart można dokonać suwakami w Ustawieniach albo przeciągając separatory w otwartym notchu, dopóki okno Ustawień jest widoczne (`allowsInteractiveComponentDividers`).
+
+#### Agenci AI
+
+- przełącznik z ikoną dla każdego `AgentProvider`,
+- wyłączony agent nie jest monitorowany i nie pojawia się w komponencie ani w Dynamic Island,
+- ostatniego włączonego agenta nie da się wyłączyć (zamiast tego można usunąć komponent).
+
+#### Zrzuty ekranu
+
+- aktualny folder zapisu zrzutów, przycisk „Zmień…” (`NSOpenPanel`, można utworzyć folder) i skrót do Findera,
+- wybór zapisuje systemowe `com.apple.screencapture` → `location`, więc zmienia miejsce zapisu dla wszystkich zrzutów macOS.
 
 #### Przyciski z aplikacji Skróty
 
@@ -587,6 +619,8 @@ Odporność na błędy:
 | ekrany zewnętrzne | `UserDefaults: display.showOnExternalDisplays` | natychmiast przebudowuje nakładki |
 | poświata | `UserDefaults: appearance.rainbowGlowEnabled` | domyślnie `true` |
 | przyciski Skrótów | `UserDefaults: shortcuts.buttons` | JSON z nazwami, kolejnością i wagami |
+| folder zrzutów ekranu | systemowe `com.apple.screencapture` → `location` | współdzielony z opcjami ⇧⌘5; NotchNook nie trzyma własnej kopii |
+| ukryci agenci AI | `UserDefaults: agents.hiddenProviders` | lista ukrytych (nie widocznych), więc nowi providerzy są domyślnie włączeni |
 | zadania | `UserDefaults: tasks.items` | JSON; ukończone są finalnie usuwane |
 | pliki Tray | `~/Library/Application Support/com.notchnook.app/Tray/<UUID>/` | fizyczne kopie plików/folderów |
 | indeks Tray | `.../Tray/tray-items.json` | JSON z metadanymi; brakujące pliki są pomijane przy odczycie |
@@ -608,6 +642,10 @@ Odporność na błędy:
 ### Pliki
 
 Podczas ingestu Tray kod próbuje użyć security-scoped access przekazanego URL, kopiuje dane do własnego `Application Support`, a następnie kończy scoped access.
+
+### Zrzuty ekranu
+
+Odczyt folderu zrzutów (domyślnie Biurko) może wywołać systemowe pytanie o dostęp do plików — pojawia się dopiero przy pierwszym otwarciu zakładki Photos.
 
 ### Lokalne dane agentów
 
@@ -698,7 +736,8 @@ TrayItemDragHandle (NSDraggingSource)
 ```text
 AgentToolFactory.makeDefaultTools
   → AgentMonitorStore (tools[provider])
-  → ApplicationPresenceMonitor (start/stop app)
+  → setEnabledProviders (Ustawienia → Agenci AI)
+  → ApplicationPresenceMonitor (start/stop app + detachedSessionProbe dla CLI)
        ├─ signalMonitor.start/stop (FS / WAL)
        ├─ adapter.start / resync / stop
        └─ agentbridge → AgentEventServer → tool.mapHookEvent
@@ -726,6 +765,7 @@ AgentToolFactory.makeDefaultTools
 | interfejsy narzędzi AI | `NotchApp/Features/Agents/Interfaces/` | `AgentToolFactory`, kontrakt, statusy natywne, FS signal monitors |
 | adaptery providerów | `NotchApp/Features/Agents/Providers/` | Cursor / Codex / Antigravity: adapter + mapper + resync |
 | Tray | `NotchApp/Features/Tray/` | kopie plików, indeks, drop i karty |
+| Zrzuty ekranu | `NotchApp/Features/Screenshots/` | folder zapisu macOS, skaner, obserwacja folderu, zakładka Photos |
 | testy | `Tests/NotchAppTests/` | geometria, store'y, `AgentToolFactoryTests` |
 | core checks | `scripts/GeometryChecks.swift` | wykonywalne asercje bez XCTest |
 

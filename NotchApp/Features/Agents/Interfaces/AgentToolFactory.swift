@@ -3,7 +3,7 @@ import Foundation
 /// Builds pluggable AI-tool interfaces. Register new tools here when adding
 /// another agent product — `AgentMonitorStore` stays provider-agnostic.
 enum AgentToolFactory {
-    /// Default production set: Codex, Antigravity, Cursor.
+    /// Default production set: one tool per `AgentProvider`.
     @MainActor
     static func makeDefaultTools(
         paths: AgentMonitorPaths = .currentUser()
@@ -23,6 +23,8 @@ enum AgentToolFactory {
             return CodexToolInterface(paths: paths)
         case .antigravity:
             return AntigravityToolInterface(paths: paths)
+        case .claude:
+            return ClaudeToolInterface(paths: paths)
         }
     }
 }

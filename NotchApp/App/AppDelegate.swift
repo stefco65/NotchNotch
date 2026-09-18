@@ -5,6 +5,7 @@ import OSLog
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let settingsStore = SettingsStore()
     let trayStore = TrayStore()
+    let screenshotStore = ScreenshotStore()
     let spotifyMusicStore = SpotifyMusicStore()
     let taskStore = TaskStore()
     let calendarStore = CalendarStore()
@@ -32,6 +33,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+
+        // Before overlays: LiveActivityCenter snapshots agent summaries on creation.
+        agentMonitorStore.setEnabledProviders(settingsStore.visibleAgentProviders)
+        settingsStore.onAgentVisibilityChange = { [weak self] in
+            guard let self else { return }
+            self.agentMonitorStore.setEnabledProviders(self.settingsStore.visibleAgentProviders)
+        }
 
         // Surface first: overlays + menu bar, then background monitors.
         settingsStore.onGeometryChange = { [weak self] in
@@ -132,6 +140,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             display: descriptor,
             settingsStore: settingsStore,
             trayStore: trayStore,
+            screenshotStore: screenshotStore,
             spotifyMusicStore: spotifyMusicStore,
             taskStore: taskStore,
             calendarStore: calendarStore,
@@ -258,7 +267,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func showSettingsWindow() {
         if settingsWindowController == nil {
-            let controller = SettingsWindowController(store: settingsStore)
+            let controller = SettingsWindowController(store: settingsStore, screenshotStore: screenshotStore)
             controller.onDismiss = { [weak self] in
                 self?.setComponentDividersInteractive(false)
             }

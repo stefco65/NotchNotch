@@ -19,6 +19,7 @@ extension AgentProviderAdapter {
         case .cursor: .cursor
         case .codex: .codex
         case .antigravity: .antigravity
+        case .claude: .claude
         }
     }
 }

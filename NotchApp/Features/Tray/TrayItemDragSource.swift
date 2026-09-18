@@ -5,10 +5,13 @@ import SwiftUI
 /// file drags from a `nonactivatingPanel` notch overlay.
 struct TrayItemDragHandle: NSViewRepresentable {
     let url: URL
+    /// Called when the mouse is released without starting a drag.
+    var onClick: (() -> Void)?
 
     func makeNSView(context: Context) -> TrayDragSourceView {
         let view = TrayDragSourceView()
         view.url = url
+        view.onClick = onClick
         view.wantsLayer = true
         // Tiny alpha so AppKit hit-testing treats the view as opaque enough
         // while remaining invisible in the UI.
@@ -22,11 +25,13 @@ struct TrayItemDragHandle: NSViewRepresentable {
 
     func updateNSView(_ nsView: TrayDragSourceView, context: Context) {
         nsView.url = url
+        nsView.onClick = onClick
     }
 }
 
 final class TrayDragSourceView: NSView, NSDraggingSource {
     var url: URL?
+    var onClick: (() -> Void)?
 
     override var mouseDownCanMoveWindow: Bool { false }
 
@@ -57,6 +62,9 @@ final class TrayDragSourceView: NSView, NSDraggingSource {
 
                 if trackedEvent.type == .leftMouseUp {
                     stop.pointee = true
+                    if !didStartDragging {
+                        self.onClick?()
+                    }
                     return
                 }
 

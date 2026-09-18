@@ -1,5 +1,15 @@
 import SwiftUI
 
+extension AgentActivityState {
+    var tint: Color {
+        switch self {
+        case .working: Color(red: 0.20, green: 0.57, blue: 1)
+        case .stopped: Color(red: 1, green: 0.56, blue: 0.18)
+        case .done: Color(red: 0.24, green: 0.82, blue: 0.48)
+        }
+    }
+}
+
 struct AgentCountersView: View {
     let snapshot: CounterSnapshot
     var isActive: Bool = true
@@ -8,21 +18,21 @@ struct AgentCountersView: View {
         HStack(spacing: 6) {
             ProviderCounterView(
                 value: snapshot.working,
-                color: Color(red: 0.20, green: 0.57, blue: 1),
+                color: AgentActivityState.working.tint,
                 symbol: "bolt.fill",
                 label: "Pracujący",
                 isActive: isActive && snapshot.working > 0
             )
             ProviderCounterView(
                 value: snapshot.waiting,
-                color: Color(red: 1, green: 0.56, blue: 0.18),
+                color: AgentActivityState.stopped.tint,
                 symbol: "pause.fill",
                 label: "Oczekujący",
                 isActive: isActive && snapshot.waiting > 0
             )
             ProviderCounterView(
                 value: snapshot.completed,
-                color: Color(red: 0.24, green: 0.82, blue: 0.48),
+                color: AgentActivityState.done.tint,
                 symbol: "checkmark",
                 label: "Gotowi",
                 isActive: isActive && snapshot.completed > 0
@@ -41,17 +51,18 @@ struct ProviderCounterView: View {
     @State private var flashScale: CGFloat = 1
 
     var body: some View {
-        HStack(spacing: 3) {
-            Image(systemName: symbol)
-                .font(.system(size: 7, weight: .bold))
-            Text(value.formatted())
-                .font(.system(size: 10, weight: .bold, design: .rounded))
-                .monospacedDigit()
-                .contentTransition(.numericText())
-                .animation(.spring(response: 0.28, dampingFraction: 0.75), value: value)
+        // Narrow cards squeeze the pill; the symbol goes first, color still tells the state.
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 3) {
+                Image(systemName: symbol)
+                    .font(.system(size: 7, weight: .bold))
+                number
+            }
+            number
         }
         .foregroundStyle(isActive ? color : color.opacity(0.38))
-        .frame(width: 27, height: 21)
+        .frame(minWidth: 16, idealWidth: 27, maxWidth: 27)
+        .frame(maxHeight: 21)
         .background(
             (isActive ? color.opacity(0.18) : color.opacity(0.07)),
             in: RoundedRectangle(cornerRadius: 6)
@@ -76,6 +87,14 @@ struct ProviderCounterView: View {
                 flashScale = 1
             }
         }
+    }
+
+    private var number: some View {
+        Text(value.formatted())
+            .font(.system(size: 10, weight: .bold, design: .rounded))
+            .monospacedDigit()
+            .contentTransition(.numericText())
+            .animation(.spring(response: 0.28, dampingFraction: 0.75), value: value)
     }
 }
 

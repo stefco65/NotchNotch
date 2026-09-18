@@ -30,6 +30,14 @@ struct ProviderCapabilities: Equatable, Sendable {
         supportsSubagents: false,
         supportsCompletionState: true
     )
+
+    static let claude = ProviderCapabilities(
+        supportsLiveEvents: true,
+        supportsResync: true,
+        supportsPermissionState: true,
+        supportsSubagents: false,
+        supportsCompletionState: true
+    )
 }
 
 enum AgentCountingMode: String, Sendable {

@@ -78,6 +78,16 @@ final class SolidBlackNotchHostingView<Content: View>: NSView {
         commitPathFillingCurrentBounds()
     }
 
+    /// Lays out and draws the SwiftUI host now, so model updates that arrive
+    /// without input events reach the screen immediately.
+    func flushHostedContent() {
+        guard let hostingView else { return }
+        hostingView.needsLayout = true
+        hostingView.layoutSubtreeIfNeeded()
+        hostingView.needsDisplay = true
+        hostingView.displayIfNeeded()
+    }
+
     /// Temporarily remove SwiftUI hosting before an unavoidable window resize.
     func detachHostingForResize() {
         hostingView?.removeFromSuperview()

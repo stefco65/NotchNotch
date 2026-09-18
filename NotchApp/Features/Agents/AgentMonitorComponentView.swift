@@ -5,10 +5,11 @@ struct AgentMonitorComponentView: View {
     @ObservedObject var store: AgentMonitorStore
 
     var body: some View {
-        VStack(spacing: 4) {
-            ForEach(store.summaries) { summary in
-                AgentSourceRow(summary: summary)
-            }
+        // Titles are shown for all rows or none, so narrow cards stay aligned
+        // instead of truncating some names to "…".
+        ViewThatFits(in: .horizontal) {
+            rows(showsTitles: true)
+            rows(showsTitles: false)
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 5)
@@ -18,42 +19,61 @@ struct AgentMonitorComponentView: View {
             RoundedRectangle(cornerRadius: 14)
                 .stroke(.white.opacity(0.07), lineWidth: 1)
         }
-        // Epoch forces PassiveHostingView to drop a stale layer tree that otherwise
-        // only recomposites on the next hover/layout pass.
-        .id(store.renderEpoch)
-        .animation(.spring(response: 0.28, dampingFraction: 0.75), value: store.renderEpoch)
+        .animation(.spring(response: 0.28, dampingFraction: 0.75), value: store.summaries)
         .onAppear { store.startMonitoring() }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Otwarci agenci AI")
     }
+
+    private func rows(showsTitles: Bool) -> some View {
+        // Rows share the fixed panel height, so any number of enabled agents fits.
+        VStack(spacing: 3) {
+            ForEach(store.summaries) { summary in
+                AgentSourceRow(summary: summary, showsTitle: showsTitles)
+                    .frame(maxHeight: AgentSourceRow.maximumHeight)
+                    .transition(.opacity)
+            }
+        }
+    }
 }
 
-private struct AgentSourceRow: View {
-    let summary: AgentSourceSummary
-
-    private static let iconCache: [AgentSource: NSImage] = Dictionary(
-        uniqueKeysWithValues: AgentSource.allCases.map {
+@MainActor
+enum AgentProviderIcon {
+    private static let cache: [AgentProvider: NSImage] = Dictionary(
+        uniqueKeysWithValues: AgentProvider.allCases.map {
             ($0, NSWorkspace.shared.icon(forFile: $0.applicationPath))
         }
     )
 
+    static func image(for provider: AgentProvider) -> NSImage {
+        cache[provider] ?? NSImage()
+    }
+}
+
+private struct AgentSourceRow: View {
+    static let maximumHeight: CGFloat = 29
+    private static let iconSize: CGFloat = 20
+
+    let summary: AgentSourceSummary
+    let showsTitle: Bool
+
     var body: some View {
         HStack(spacing: 6) {
-            Image(nsImage: Self.iconCache[summary.source] ?? NSImage())
+            Image(nsImage: AgentProviderIcon.image(for: summary.source))
                 .resizable()
                 .interpolation(.high)
-                .frame(width: 22, height: 22)
+                .frame(width: Self.iconSize, height: Self.iconSize)
                 .opacity(summary.isApplicationRunning ? 1 : 0.42)
-                .animation(.spring(response: 0.3, dampingFraction: 0.7), value: summary.isApplicationRunning)
 
-            Text(summary.source.title)
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(.white.opacity(summary.isApplicationRunning ? 0.9 : 0.42))
-                .lineLimit(1)
-                .minimumScaleFactor(0.72)
-                .animation(.easeInOut(duration: 0.2), value: summary.isApplicationRunning)
+            if showsTitle {
+                Text(summary.source.title)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.white.opacity(summary.isApplicationRunning ? 0.9 : 0.42))
+                    .lineLimit(1)
+                    .fixedSize()
+            }
 
-            Spacer(minLength: 2)
+            Spacer(minLength: 0)
 
             AgentCountersView(
                 snapshot: CounterSnapshot(
@@ -63,18 +83,17 @@ private struct AgentSourceRow: View {
                 ),
                 isActive: summary.isApplicationRunning
             )
-            .animation(.spring(response: 0.28, dampingFraction: 0.75), value: summary.counts)
         }
-        .frame(height: 29)
-        // Force SwiftUI to diff when counts change even if the row identity is stable
-        // (hosting views inside the notch sometimes skip redraws until hover).
-        .id(
-            "\(summary.source.rawValue)-\(summary.counts.working)-\(summary.counts.stopped)-\(summary.counts.done)-\(summary.isApplicationRunning)"
-        )
+        .frame(maxHeight: .infinity)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel(
-            "\(summary.source.title): \(summary.counts.working) pracujących, "
-            + "\(summary.counts.stopped) zatrzymanych, \(summary.counts.done) gotowych"
-        )
+        .accessibilityLabel(accessibilityDescription)
+    }
+
+    private var accessibilityDescription: String {
+        guard summary.isApplicationRunning else {
+            return "\(summary.source.title): nie działa"
+        }
+        return "\(summary.source.title): \(summary.counts.working) pracujących, "
+            + "\(summary.counts.stopped) oczekujących, \(summary.counts.done) gotowych"
     }
 }

@@ -14,6 +14,14 @@ final class AgentToolFactoryTests: XCTestCase {
         XCTAssertEqual(AgentToolFactory.make(provider: .cursor).provider, .cursor)
         XCTAssertEqual(AgentToolFactory.make(provider: .codex).provider, .codex)
         XCTAssertEqual(AgentToolFactory.make(provider: .antigravity).provider, .antigravity)
+        XCTAssertEqual(AgentToolFactory.make(provider: .claude).provider, .claude)
+    }
+
+    func testOnlyClaudeProbesDetachedSessions() {
+        for provider in AgentProvider.allCases {
+            let tool = AgentToolFactory.make(provider: provider)
+            XCTAssertEqual(tool.detachedSessionProbe != nil, provider == .claude, provider.rawValue)
+        }
     }
 
     func testCursorNativeStatusMapsThroughInterfaceEnum() {
@@ -69,6 +77,12 @@ final class AgentToolFactoryTests: XCTestCase {
 
         let anti = AgentToolFactory.make(provider: .antigravity)
         XCTAssertEqual(anti.mapHookEvent("toolconfirmationpending"), .waitingForUser)
+
+        let claude = AgentToolFactory.make(provider: .claude)
+        XCTAssertEqual(claude.mapHookEvent("PreToolUse"), .working)
+        XCTAssertEqual(claude.mapHookEvent("Notification"), .waitingForUser)
+        XCTAssertEqual(claude.mapHookEvent("Stop"), .completed)
+        XCTAssertEqual(claude.mapHookEvent("SessionEnd"), .removed)
     }
 
     func testWatchTargetsAreProviderScoped() {
@@ -76,6 +90,7 @@ final class AgentToolFactoryTests: XCTestCase {
         XCTAssertFalse(paths.watchTargets(for: .cursor).isEmpty)
         XCTAssertFalse(paths.watchTargets(for: .codex).isEmpty)
         XCTAssertFalse(paths.watchTargets(for: .antigravity).isEmpty)
+        XCTAssertEqual(paths.watchTargets(for: .claude), [paths.claudeSessions])
         XCTAssertEqual(
             Set(paths.watchTargets.map(\.path)),
             Set(AgentProvider.allCases.flatMap { paths.watchTargets(for: $0).map(\.path) })

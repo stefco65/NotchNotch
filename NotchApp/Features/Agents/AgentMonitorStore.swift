@@ -2,17 +2,18 @@ import Combine
 import Foundation
 
 /// Coordinates presence monitoring, provider tool interfaces, IPC and reconciliation.
-/// Publishes UI-facing `summaries` derived exclusively from `AgentStateStore`.
+/// Publishes UI-facing `summaries` derived exclusively from `AgentStateStore`,
+/// limited to the providers enabled in Settings.
 @MainActor
 final class AgentMonitorStore: ObservableObject {
-    @Published private(set) var summaries: [AgentSourceSummary] = AgentProvider.allCases.map {
-        AgentSourceSummary(source: $0, counts: AgentCounts(), isApplicationRunning: false)
-    }
+    @Published private(set) var summaries: [AgentSourceSummary] = []
 
     let stateStore: AgentStateStore
+    /// Disabled providers are neither monitored nor published.
+    private(set) var enabledProviders = Set(AgentProvider.allCases)
 
     private let paths: AgentMonitorPaths
-    private let presenceMonitor = ApplicationPresenceMonitor()
+    private let presenceMonitor: ApplicationPresenceMonitor
     // Cursor status chips change several times per turn; keep this tight so
     // the Agents component / DI update without waiting for a hover redraw.
     private let reconciliation = AgentReconciliationService(intervalSeconds: 1)
@@ -34,11 +35,13 @@ final class AgentMonitorStore: ObservableObject {
         stateStore: AgentStateStore? = nil,
         paths: AgentMonitorPaths = .currentUser(),
         tools: [any AgentToolInterface]? = nil,
-        adapters: [any AgentProviderAdapter]? = nil
+        adapters: [any AgentProviderAdapter]? = nil,
+        presenceMonitor: ApplicationPresenceMonitor? = nil
     ) {
         let resolvedStore = stateStore ?? AgentStateStore()
         self.stateStore = resolvedStore
         self.paths = paths
+        self.presenceMonitor = presenceMonitor ?? ApplicationPresenceMonitor()
 
         let resolvedTools: [any AgentToolInterface]
         if let tools {
@@ -60,6 +63,9 @@ final class AgentMonitorStore: ObservableObject {
             }
             tool.signalMonitor.onChange = { [weak self] in
                 self?.scheduleResync(debounceMs: 120)
+            }
+            if let probe = tool.detachedSessionProbe {
+                self.presenceMonitor.detachedSessionProbes[tool.provider] = probe
             }
         }
 
@@ -87,8 +93,13 @@ final class AgentMonitorStore: ObservableObject {
         }
         // Presence callbacks are async; overlays/UI must not wait on first resync.
         presenceMonitor.start()
+        Task { [weak self] in
+            await self?.presenceMonitor.refreshDetachedSessions()
+        }
 
         reconciliation.start { [weak self] in
+            // CLI sessions start and die without NSWorkspace notifications.
+            await self?.presenceMonitor.refreshDetachedSessions()
             await self?.resyncActiveProviders()
         }
 
@@ -115,9 +126,29 @@ final class AgentMonitorStore: ObservableObject {
         scheduleResync(debounceMs: 0)
     }
 
+    func setEnabledProviders(_ providers: Set<AgentProvider>) {
+        guard providers != enabledProviders else { return }
+        let newlyEnabled = providers.subtracting(enabledProviders)
+        let newlyDisabled = enabledProviders.subtracting(providers)
+        enabledProviders = providers
+
+        for provider in newlyDisabled {
+            deactivate(provider)
+        }
+        if hasStarted {
+            for provider in newlyEnabled where presenceMonitor.isProviderRunning(provider) {
+                Task { [weak self] in
+                    await self?.handleProviderStarted(provider)
+                }
+            }
+        }
+        publishSummaries()
+    }
+
     // MARK: - Presence
 
     private func handleProviderStarted(_ provider: AgentProvider) async {
+        guard enabledProviders.contains(provider), !activeProviders.contains(provider) else { return }
         stateStore.providerStarted(provider)
         guard let instanceID = stateStore.instanceID(for: provider),
               let tool = tools[provider] else {
@@ -144,11 +175,16 @@ final class AgentMonitorStore: ObservableObject {
     }
 
     private func handleProviderStopped(_ provider: AgentProvider) async {
-        tools[provider]?.signalMonitor.stop()
-        tools[provider]?.adapter.stop()
-        activeProviders.remove(provider)
-        stateStore.providerStopped(provider)
+        deactivate(provider)
         publishSummaries()
+    }
+
+    private func deactivate(_ provider: AgentProvider) {
+        if activeProviders.remove(provider) != nil {
+            tools[provider]?.signalMonitor.stop()
+            tools[provider]?.adapter.stop()
+        }
+        stateStore.providerStopped(provider)
     }
 
     // MARK: - Resync / reconciliation
@@ -212,7 +248,8 @@ final class AgentMonitorStore: ObservableObject {
     }
 
     private func ingestIPCPayload(_ payload: AgentEventPayload) {
-        guard let provider = AgentProvider(rawValue: payload.provider.lowercased()) else { return }
+        guard let provider = AgentProvider(rawValue: payload.provider.lowercased()),
+              enabledProviders.contains(provider) else { return }
         let fallbackInstanceID = stateStore.instanceID(for: provider)
         let kindOverride = tools[provider]?.mapHookEvent(payload.event)
         guard let event = AgentEventDecoder.normalize(
@@ -230,7 +267,7 @@ final class AgentMonitorStore: ObservableObject {
     // MARK: - UI publish
 
     private func publishSummaries() {
-        let next = stateStore.summaries
+        let next = stateStore.summaries.filter { enabledProviders.contains($0.source) }
         guard next != summaries else { return }
         summaries = next
         renderEpoch &+= 1

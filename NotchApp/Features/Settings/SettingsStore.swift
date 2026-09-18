@@ -30,7 +30,7 @@ enum PanelComponentKind: String, CaseIterable, Codable, Identifiable, Sendable {
         case .calendar: "Najbliższe wydarzenia"
         case .shortcuts: "Szybkie akcje"
         case .tasks: "Lista rzeczy do zrobienia"
-        case .agents: "Codex, Antigravity i Cursor"
+        case .agents: "Claude, Codex, Cursor i Antigravity"
         case .mirror: "Podgląd kamery"
         case .systemStatus: "Stan urządzenia"
         }
@@ -98,6 +98,7 @@ final class SettingsStore: ObservableObject {
         static let didInstallShortcutsComponent = "shortcuts.didInstallComponentV1"
         static let didInstallTasksComponent = "tasks.didInstallComponentV1"
         static let didInstallAgentsComponent = "agents.didInstallComponentV1"
+        static let hiddenAgentProviders = "agents.hiddenProviders"
     }
 
     private let defaults: UserDefaults
@@ -110,11 +111,14 @@ final class SettingsStore: ObservableObject {
     @Published private(set) var shortcutButtons: [ShortcutButtonConfiguration]
     @Published private(set) var installedShortcutNames: [String] = []
     @Published private(set) var isLoadingShortcuts = false
+    /// Stored as hidden rather than visible so newly supported agents show up by default.
+    @Published private(set) var hiddenAgentProviders: Set<AgentProvider>
 
     private var shouldSeedShortcutButtons: Bool
 
     var onGeometryChange: (() -> Void)?
     var onDisplayPolicyChange: (() -> Void)?
+    var onAgentVisibilityChange: (() -> Void)?
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -128,6 +132,12 @@ final class SettingsStore: ObservableObject {
         rainbowGlowEnabled = defaults.object(forKey: Key.rainbowGlowEnabled) == nil
             ? true
             : defaults.bool(forKey: Key.rainbowGlowEnabled)
+
+        let storedHidden = Set(
+            (defaults.stringArray(forKey: Key.hiddenAgentProviders) ?? [])
+                .compactMap(AgentProvider.init(rawValue:))
+        )
+        hiddenAgentProviders = storedHidden.count < AgentProvider.allCases.count ? storedHidden : []
 
         var migratedComponents = false
         let shouldInstallShortcutsComponent = !defaults.bool(
@@ -268,6 +278,28 @@ final class SettingsStore: ObservableObject {
         guard isEnabled != rainbowGlowEnabled else { return }
         rainbowGlowEnabled = isEnabled
         defaults.set(isEnabled, forKey: Key.rainbowGlowEnabled)
+    }
+
+    var visibleAgentProviders: Set<AgentProvider> {
+        Set(AgentProvider.allCases).subtracting(hiddenAgentProviders)
+    }
+
+    /// The last visible agent cannot be hidden — remove the component instead.
+    func setAgentProvider(_ provider: AgentProvider, isVisible: Bool) {
+        var hidden = hiddenAgentProviders
+        if isVisible {
+            hidden.remove(provider)
+        } else {
+            hidden.insert(provider)
+        }
+        guard hidden != hiddenAgentProviders,
+              hidden.count < AgentProvider.allCases.count else { return }
+        hiddenAgentProviders = hidden
+        defaults.set(
+            AgentProvider.allCases.filter(hidden.contains).map(\.rawValue),
+            forKey: Key.hiddenAgentProviders
+        )
+        onAgentVisibilityChange?()
     }
 
     func refreshInstalledShortcuts() {

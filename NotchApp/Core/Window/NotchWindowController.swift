@@ -21,6 +21,7 @@ final class NotchWindowController: NSWindowController {
     private let model = OverlayPresentationModel()
     private let settingsStore: SettingsStore
     private let trayStore: TrayStore
+    private let screenshotStore: ScreenshotStore
     private let spotifyMusicStore: SpotifyMusicStore
     private let taskStore: TaskStore
     private let calendarStore: CalendarStore
@@ -40,6 +41,7 @@ final class NotchWindowController: NSWindowController {
         display: DisplayDescriptor,
         settingsStore: SettingsStore,
         trayStore: TrayStore,
+        screenshotStore: ScreenshotStore,
         spotifyMusicStore: SpotifyMusicStore,
         taskStore: TaskStore,
         calendarStore: CalendarStore,
@@ -49,6 +51,7 @@ final class NotchWindowController: NSWindowController {
         self.display = display
         self.settingsStore = settingsStore
         self.trayStore = trayStore
+        self.screenshotStore = screenshotStore
         self.spotifyMusicStore = spotifyMusicStore
         self.taskStore = taskStore
         self.calendarStore = calendarStore
@@ -78,6 +81,7 @@ final class NotchWindowController: NSWindowController {
                 model: model,
                 settingsStore: settingsStore,
                 trayStore: trayStore,
+                screenshotStore: screenshotStore,
                 spotifyMusicStore: spotifyMusicStore,
                 taskStore: taskStore,
                 calendarStore: calendarStore,
@@ -180,15 +184,12 @@ final class NotchWindowController: NSWindowController {
             .removeDuplicates()
             .dropFirst()
             .sink { [weak self] _ in
-                MainActor.assumeIsolated {
-                    guard let self else { return }
-                    // Expanded agents counters live in PassiveHostingView — kick a
-                    // display pass so numbers refresh without pointer motion.
-                    self.surfaceHostView?.needsDisplay = true
-                    self.surfaceHostView?.layer?.setNeedsDisplay()
-                    self.surfaceHostView?.displayIfNeeded()
-                    self.window?.contentView?.needsDisplay = true
-                    self.window?.displayIfNeeded()
+                // Expanded agents counters live in PassiveHostingView, which is
+                // re-parented around resizes and can then skip updates until the
+                // next pointer event. `@Published` emits before the new value
+                // lands, so force layout + draw on the next main-queue turn.
+                DispatchQueue.main.async { [weak self] in
+                    self?.surfaceHostView?.flushHostedContent()
                 }
             }
     }
@@ -318,7 +319,7 @@ final class NotchWindowController: NSWindowController {
 
         if Self.shouldCollapse(
             state: state,
-            isTrayMode: model.selectedTab == .tray,
+            isTrayMode: model.selectedTab.keepsNotchOpen,
             suppressOutsideCollapse: isOutsideCollapseSuppressed?() ?? false,
             panelFrame: window.frame,
             pointerLocation: point
@@ -866,6 +867,10 @@ private final class OverlayPresentationModel: ObservableObject {
     enum ExpandedTab: Equatable {
         case notch
         case tray
+        case photos
+
+        /// File tabs stay open while the pointer leaves, so items can be dragged out.
+        var keepsNotchOpen: Bool { self != .notch }
     }
 
     @Published var surfaceState: NotchWindowController.SurfaceState = .collapsed
@@ -895,6 +900,7 @@ private struct OverlaySurfaceView: View {
     @ObservedObject var model: OverlayPresentationModel
     @ObservedObject var settingsStore: SettingsStore
     @ObservedObject var trayStore: TrayStore
+    @ObservedObject var screenshotStore: ScreenshotStore
     @ObservedObject var spotifyMusicStore: SpotifyMusicStore
     @ObservedObject var taskStore: TaskStore
     @ObservedObject var calendarStore: CalendarStore
@@ -1014,7 +1020,7 @@ private struct OverlaySurfaceView: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel("Otwórz ustawienia")
 
-                if model.selectedTab == .tray {
+                if model.selectedTab.keepsNotchOpen {
                     Button {
                         model.onToggle?()
                     } label: {
@@ -1031,7 +1037,7 @@ private struct OverlaySurfaceView: View {
                     }
                     .buttonStyle(.plain)
                     .offset(y: -2)
-                    .accessibilityLabel("Zamknij Tray")
+                    .accessibilityLabel("Zamknij notch")
                 }
             }
             .padding(.top, 14)
@@ -1048,6 +1054,7 @@ private struct OverlaySurfaceView: View {
             HStack(spacing: 4) {
                 tabButton(title: "Notch", tab: .notch)
                 tabButton(title: "Tray", tab: .tray)
+                tabButton(title: "Photos", tab: .photos)
                 Spacer()
             }
             .padding(.trailing, 42)
@@ -1058,6 +1065,8 @@ private struct OverlaySurfaceView: View {
                     configuredComponents
                 case .tray:
                     TrayView(store: trayStore)
+                case .photos:
+                    PhotosView(store: screenshotStore)
                 }
             }
             .transition(.opacity)

@@ -7,6 +7,7 @@ output_path="${TMPDIR:-/tmp}/notchnook-geometry-checks"
 cd "$repo_root"
 
 agent_sources=(NotchApp/Features/Agents/**/*.swift(N.))
+screenshot_sources=(NotchApp/Features/Screenshots/*.swift(N.))
 
 swiftc \
     NotchApp/Core/Display/DisplayDescriptor.swift \
@@ -27,6 +28,7 @@ swiftc \
     NotchApp/Features/Calendar/CalendarStore.swift \
     NotchApp/Features/Calendar/CalendarComponentView.swift \
     "${agent_sources[@]}" \
+    "${screenshot_sources[@]}" \
     NotchApp/Features/LiveActivity/LiveActivityCenter.swift \
     NotchApp/Features/LiveActivity/DynamicIslandLayout.swift \
     NotchApp/Features/LiveActivity/DynamicIslandBubbleController.swift \

@@ -145,6 +145,10 @@ final class DynamicIslandBubbleController {
         if metricsChanged || activityChanged || visibilityChanging {
             if let hosting = hostingView {
                 hosting.rootView = DynamicIslandBubbleView(model: model)
+                // The host is re-parented on every frame change; without a forced
+                // layout pass it can keep drawing the previous activity.
+                hosting.needsLayout = true
+                hosting.layoutSubtreeIfNeeded()
                 hosting.needsDisplay = true
                 hosting.displayIfNeeded()
             }

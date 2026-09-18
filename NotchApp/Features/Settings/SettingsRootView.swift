@@ -3,6 +3,7 @@ import SwiftUI
 
 struct SettingsRootView: View {
     @ObservedObject var store: SettingsStore
+    @ObservedObject var screenshotStore: ScreenshotStore
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -13,7 +14,9 @@ struct SettingsRootView: View {
                 appearanceSection
                 displaysSection
                 componentsSection
+                agentsSection
                 shortcutButtonsSection
+                screenshotsSection
                 applicationSection
             }
             .formStyle(.grouped)
@@ -21,7 +24,56 @@ struct SettingsRootView: View {
         .frame(minWidth: 480, minHeight: 360)
         .onAppear {
             store.refreshInstalledShortcuts()
+            screenshotStore.syncFolderWithSystem()
         }
+    }
+
+    private var screenshotsSection: some View {
+        Section("Zrzuty ekranu") {
+            LabeledContent("Folder") {
+                HStack(spacing: 8) {
+                    Text(abbreviatedPath(screenshotStore.folder))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .foregroundStyle(.secondary)
+                        .help(screenshotStore.folder.path)
+
+                    Button("Zmień…") {
+                        chooseScreenshotFolder()
+                    }
+
+                    Button {
+                        NSWorkspace.shared.open(screenshotStore.folder)
+                    } label: {
+                        Image(systemName: "folder")
+                    }
+                    .buttonStyle(.borderless)
+                    .accessibilityLabel("Pokaż folder zrzutów w Finderze")
+                }
+            }
+
+            Text("Zrzuty zrobione skrótami ⇧⌘3, ⇧⌘4 lub ⇧⌘5 zapisują się w tym folderze i pojawiają w zakładce Photos. To ustawienie systemowe — to samo co „Zapisz w” w opcjach aplikacji Zrzut ekranu.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func chooseScreenshotFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = screenshotStore.folder
+        panel.prompt = "Wybierz"
+        panel.message = "Wybierz folder, w którym macOS będzie zapisywać zrzuty ekranu."
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        screenshotStore.setFolder(url)
+    }
+
+    private func abbreviatedPath(_ url: URL) -> String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        return url.path.hasPrefix(home) ? "~" + url.path.dropFirst(home.count) : url.path
     }
 
     private var appearanceSection: some View {
@@ -178,6 +230,34 @@ struct SettingsRootView: View {
             .buttonStyle(.borderless)
             .disabled(store.components.count == 1)
             .accessibilityLabel("Usuń komponent")
+        }
+    }
+
+    private var agentsSection: some View {
+        Section("Agenci AI") {
+            ForEach(AgentProvider.allCases) { provider in
+                let isVisible = store.visibleAgentProviders.contains(provider)
+                Toggle(
+                    isOn: Binding(
+                        get: { isVisible },
+                        set: { store.setAgentProvider(provider, isVisible: $0) }
+                    )
+                ) {
+                    Label {
+                        Text(provider.title)
+                    } icon: {
+                        Image(nsImage: AgentProviderIcon.image(for: provider))
+                            .resizable()
+                            .interpolation(.high)
+                            .frame(width: 18, height: 18)
+                    }
+                }
+                .disabled(isVisible && store.visibleAgentProviders.count == 1)
+            }
+
+            Text("Wyłączeni agenci nie są monitorowani i nie pojawiają się w komponencie ani w Dynamic Island. Co najmniej jeden agent musi pozostać włączony. Claude obejmuje aplikację Claude oraz sesje Claude Code uruchomione w terminalu.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 

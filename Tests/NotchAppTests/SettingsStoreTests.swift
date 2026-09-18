@@ -151,4 +151,39 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertGreaterThan(store.expandedWidth, initialWidth)
         XCTAssertEqual(store.expandedWidth, store.requiredExpandedWidth)
     }
+
+    func testAllAgentsVisibleByDefault() throws {
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        let store = SettingsStore(defaults: defaults)
+        XCTAssertEqual(store.visibleAgentProviders, Set(AgentProvider.allCases))
+    }
+
+    func testHiddenAgentsPersistAndNotify() throws {
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        let store = SettingsStore(defaults: defaults)
+        var notificationCount = 0
+        store.onAgentVisibilityChange = { notificationCount += 1 }
+
+        store.setAgentProvider(.antigravity, isVisible: false)
+        store.setAgentProvider(.antigravity, isVisible: false)
+
+        XCTAssertEqual(notificationCount, 1)
+        let restored = SettingsStore(defaults: defaults)
+        XCTAssertFalse(restored.visibleAgentProviders.contains(.antigravity))
+        XCTAssertTrue(restored.visibleAgentProviders.contains(.claude))
+
+        restored.setAgentProvider(.antigravity, isVisible: true)
+        XCTAssertEqual(SettingsStore(defaults: defaults).visibleAgentProviders, Set(AgentProvider.allCases))
+    }
+
+    func testLastVisibleAgentCannotBeHidden() throws {
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        let store = SettingsStore(defaults: defaults)
+
+        for provider in AgentProvider.allCases {
+            store.setAgentProvider(provider, isVisible: false)
+        }
+
+        XCTAssertEqual(store.visibleAgentProviders.count, 1)
+    }
 }

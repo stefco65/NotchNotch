@@ -40,7 +40,7 @@ struct AgentBridgeMain {
             agentbridge — emit normalized agent events to NotchNook via Unix socket.
 
             Usage:
-              agentbridge emit --provider <cursor|codex|antigravity> --agent <id> --state <event> [options]
+              agentbridge emit --provider <cursor|codex|antigravity|claude> --agent <id> --state <event> [options]
               echo '<json>' | agentbridge --stdin
 
             Options:

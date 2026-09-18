@@ -17,8 +17,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     /// Fires when the settings window is hidden or closed.
     var onDismiss: (() -> Void)?
 
-    init(store: SettingsStore) {
-        let hostingView = PassiveHostingView(rootView: SettingsRootView(store: store))
+    init(store: SettingsStore, screenshotStore: ScreenshotStore) {
+        let hostingView = PassiveHostingView(
+            rootView: SettingsRootView(store: store, screenshotStore: screenshotStore)
+        )
         hostingView.sizingOptions = []
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: Metrics.defaultSize),

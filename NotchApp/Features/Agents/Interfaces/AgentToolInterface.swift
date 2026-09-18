@@ -32,6 +32,15 @@ protocol AgentToolInterface: AnyObject {
     var adapter: any AgentProviderAdapter { get }
     var signalMonitor: any AgentToolSignalMonitor { get }
 
+    /// For tools that also run without their desktop app (e.g. a terminal CLI):
+    /// reports live sessions so presence does not hinge on the app alone.
+    /// Runs off the main actor.
+    var detachedSessionProbe: (@Sendable () -> Bool)? { get }
+
     /// Maps a raw hook / IPC event name into a normalized event kind.
     func mapHookEvent(_ name: String) -> NormalizedAgentEvent.Kind?
+}
+
+extension AgentToolInterface {
+    var detachedSessionProbe: (@Sendable () -> Bool)? { nil }
 }
